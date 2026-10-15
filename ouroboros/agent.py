@@ -88,6 +88,7 @@ def parse_action(reply: str):
 class Agent:
     def __init__(self, llm: LLM, guardian: Guardian, confirm: Confirm):
         self.llm, self.g, self.confirm = llm, guardian, confirm
+        self.status = "idle"  # after run(): "final", "budget" or "halted"
 
     def _system(self) -> str:
         rules = "\n".join(f"- {p}" for p in self.g.constitution.principles)
@@ -118,12 +119,15 @@ class Agent:
                 if "final" in obj:
                     answer = str(obj["final"])
                     audit.append(kind="final", answer=answer[:500])
+                    self.status = "final"
                     return answer
                 messages.append({"role": "user", "content": self._act(obj)})
             audit.append(kind="halt", reason="step budget exhausted")
+            self.status = "budget"
             return "(stopped: step budget exhausted)"
         except Halted as exc:
             audit.append(kind="halt", reason=str(exc))
+            self.status = "halted"
             return f"(halted: {exc})"
 
     def _act(self, obj: dict) -> str:

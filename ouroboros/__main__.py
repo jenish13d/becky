@@ -154,6 +154,55 @@ def cmd_amend(a: argparse.Namespace) -> None:
         raise SystemExit(f"Refused: {exc}")
 
 
+def cmd_hub(a: argparse.Namespace) -> None:
+    import sys
+
+    from .agent import OllamaLLM
+    from .guardian import DEFAULT_CONSTITUTION, AuditLog, Guardian
+    from .hub import HubBusy, load_tasks, run_hub, schedule_help
+    from .owner import is_initialised
+
+    if a.print_schedule:
+        print(schedule_help(sys.executable))
+        return
+    owner_dir = Path(a.owner_dir)
+    if not is_initialised(owner_dir):
+        raise SystemExit("No owner passphrase is set up yet. Run:  python -m ouroboros init-owner")
+    tasks_file = Path(a.tasks) if a.tasks else owner_dir / "tasks.json"
+    try:
+        tasks = load_tasks(tasks_file)
+    except ValueError as exc:
+        raise SystemExit(f"{exc}\nExpected a file like: " + '[{"id": "daily", "goal": "list the files in the workspace"}]')
+    audit = AuditLog(Path(a.audit))
+    ws = Path(a.workspace)
+
+    def make_guardian():
+        return Guardian(DEFAULT_CONSTITUTION, ws, audit, owner_dir=owner_dir)
+
+    try:
+        report = run_hub(tasks, make_guardian, OllamaLLM(a.model), Path(a.audit), owner_dir / "reports",
+                         owner_dir / "hub.lock", deadline_s=a.deadline_minutes * 60)
+    except HubBusy as exc:
+        raise SystemExit(str(exc))
+    for r in report["tasks"]:
+        print(f"[{r['status']}] {r['id']}: {r['detail'][:200]}")
+    print(f"\nreport: {report['path']}  (audit intact: {report['audit_intact']})")
+
+
+def cmd_snn(a: argparse.Namespace) -> None:
+    from .snn import raster, train_snn
+
+    model, res, (x, y) = train_snn(seed=a.seed, epochs=a.epochs, hidden=a.hidden, log=print)
+    print(f"\ntrain accuracy {res.train_accuracy:.1%}   test accuracy {res.test_accuracy:.1%}   (chance 25%)")
+    print(f"firing rate: hidden {res.hidden_rate:.1%} of neuron-steps, output {res.out_rate:.1%}")
+    import torch
+
+    with torch.no_grad():
+        logits, spikes = model(x[:, :1])
+    print(f"\nExample: true class {int(y[0])}, predicted {int(logits.argmax())}")
+    print("Hidden-layer spike raster (rows = neurons, columns = time):\n" + raster(spikes["hidden"][:, 0]))
+
+
 def cmd_audit(a: argparse.Namespace) -> None:
     from .guardian import AuditLog
 
@@ -243,6 +292,22 @@ def main() -> None:
     am.add_argument("--owner-dir", default=str(home))
     am.add_argument("--audit", default=str(home / "audit.jsonl"))
     am.set_defaults(fn=cmd_amend)
+
+    hb = sub.add_parser("hub", help="run the task list once, bounded (for a scheduler)")
+    hb.add_argument("--tasks", default=None, help="default: <owner dir>/tasks.json")
+    hb.add_argument("--workspace", default="becky_workspace")
+    hb.add_argument("--audit", default=str(home / "audit.jsonl"))
+    hb.add_argument("--owner-dir", default=str(home))
+    hb.add_argument("--model", default="llama3.2")
+    hb.add_argument("--deadline-minutes", type=float, default=30.0)
+    hb.add_argument("--print-schedule", action="store_true", help="print how to schedule it, then exit")
+    hb.set_defaults(fn=cmd_hub)
+
+    sn = sub.add_parser("snn-demo", help="train and inspect a spiking neural network")
+    sn.add_argument("--seed", type=int, default=0)
+    sn.add_argument("--epochs", type=int, default=25)
+    sn.add_argument("--hidden", type=int, default=64)
+    sn.set_defaults(fn=cmd_snn)
 
     au = sub.add_parser("audit", help="verify the audit log's hash chain")
     au.add_argument("--log", default=str(home / "audit.jsonl"))

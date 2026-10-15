@@ -16,7 +16,7 @@ It runs on a laptop CPU in minutes, and every decision it makes is written to di
 | `ouroboros/evolve.py` | The self-improvement loop: `Genome` (design + training recipe), `Designer` (the policy that proposes successors), budgets, promotion, lineage log. |
 | `ouroboros/selfedit.py` + `organism.py` | **Permission-gated self-improving *code*:** a program that reads its own source, proposes an upgrade to a bounded region of itself, proves it on a held-out task, and rewrites itself only after a human approves the diff. |
 | `ouroboros/guardian.py` + `agent.py` | **Becky**: a local agent whose moral code (`constitution.toml`) is enforced by a guardian outside the model. |
-| `tests/` | 112 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
+| `tests/` | 158 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
 
 ## How one generation works
 
@@ -97,9 +97,33 @@ What a signature can and cannot change: it can tune how much she asks you (`allo
 
 **If you lose the passphrase, nobody can change her rules again** (you would re-initialise). Choose 4+ random words or 16+ characters; keyboard and alphabet runs like `asdfg` or `12345` are rejected. This protects against the agent and against anyone editing the file; it does not stop someone who controls your account and can replace the code and the stored public key, so keep `~/.becky/` permission-locked to your user.
 
+### The hub: bounded background runs
+
+One central process, started by your scheduler, works through a task list **only you can write** and then exits. Nothing runs between invocations and nothing talks to other machines.
+
+```bash
+# ~/.becky/tasks.json  (the agent cannot reach this file, so it cannot give itself work)
+[{"id": "daily", "goal": "list the files in the workspace and note anything new"}]
+
+python -m ouroboros hub                    # run once, bounded
+python -m ouroboros hub --print-schedule   # prints the schtasks / cron line; it never installs anything
+```
+
+Bounds: at most 10 tasks, each limited by the guardian's step budget, all of them by one wall-clock deadline (default 30 min), and a lock so runs never overlap. **Unattended means nobody can approve, so every `ask` is declined**; to let a scheduled run write files you must deliberately run `amend --set write_file=allow` with your passphrase. Each run writes a JSON report to `~/.becky/reports/` and re-verifies the audit chain. The kill switch and signature check apply on every action.
+
+"Learning" here is only her own notes (`memory.md`), fed to the next run labelled *information, not instructions*. Notes are written by the model, so treat them as untrusted: a poisoned note can mislead her but cannot widen what the guardian allows.
+
 **Limits, stated plainly.** This governs the tools Becky is given; it cannot make a model "good". A hash chain reveals tampering but can't stop someone with full disk access from rewriting the whole log. A bug in `guardian.py` is a hole. It is a seatbelt, not a conscience.
 
 The confinement and the tool set live in the code, so editing the constitution can change *how much she asks you*, but cannot grant her a shell or let her out of her workspace.
+
+## Neuromorphic: a spiking neural network
+
+`python -m ouroboros snn-demo` trains a network of leaky integrate-and-fire neurons: each holds a membrane potential that leaks, integrates input, fires a binary spike at a threshold, and resets. Spikes can't be differentiated, so training uses a **surrogate gradient** (a smooth fast-sigmoid on the backward pass only).
+
+On a synthetic task (noisy spike trains, four classes, bursts at random times) it reaches **~93% test accuracy against 25% chance** in seconds on a CPU, and prints a spike raster so you can watch it fire. The tests check the neuron physics directly: exact leak per step, the precise step a neuron first fires, reset by subtraction, stronger input firing earlier.
+
+Honest scope: this is a small, faithful model of the idea on a toy task, **not a benchmark and not a claim about any hardware**. Its hidden layer fires on ~27% of neuron-steps, which is not especially sparse; sparsity is the neuromorphic selling point, and this demo doesn't optimise for it.
 
 ## Built-in limits
 
