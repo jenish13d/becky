@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import random
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +33,9 @@ import torch
 from .agent import parse_action
 from .data import decode, encode
 from .model import GPT, GPTConfig
-from .train import TrainRecipe, train
+import torch.nn.functional as F
+
+from .train import TrainRecipe, lr_at, make_optimizer
 
 DEFAULT_BRAIN = Path(__file__).resolve().parent / "brain.pt"
 BLOCK_SIZE = 224
@@ -52,11 +55,42 @@ silver golden crimson violet indigo scarlet amber coral ivory jade onyx pearl ru
 apple banana cherry grape lemon mango olive peach plum berry honey sugar pepper ginger
 monday tuesday friday sunday spring summer autumn winter morning evening midnight noon
 tiger rabbit dolphin eagle otter badger heron lizard sparrow beetle walrus panda koala
-engine bottle jacket hammer ladder pillow shovel wagon yellow orange purple green brown""".split()
+engine bottle jacket hammer ladder pillow shovel wagon yellow orange purple green brown
+notes todo plan summary report ideas draft log data readme list meeting budget recipe shopping
+project homework diary tasks backup config setup fruit milk bread email invoice resume essay
+story poem chapter outline agenda minutes journal contacts passwords reminder schedule travel
+photos music movie book idea test final old new temp today tomorrow week""".split()
 _WORDS = sorted(set(_WORDS))
 TEST_WORDS = _WORDS[::5]  # never seen in training: tests copying of unfamiliar words
 TRAIN_WORDS = [w for w in _WORDS if w not in set(TEST_WORDS)]
 EXTS = (".txt", ".md")
+_CONS, _VOWELS = "bdfgklmnprstvz", "aeiou"
+
+
+def is_test_word(w: str) -> bool:
+    """Stable split for invented words: ~1 in 5 are reserved for testing, never trained on."""
+    return zlib.crc32(w.encode()) % 5 == 0
+
+
+def _candidate(rng: random.Random) -> str:
+    roll = rng.random()
+    if roll < 0.35:  # pronounceable invented word
+        return "".join(rng.choice(_CONS) + rng.choice(_VOWELS) for _ in range(rng.randint(2, 4)))
+    if roll < 0.80:  # arbitrary letters, so no spelling pattern can be memorised
+        return "".join(rng.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(rng.randint(2, 9)))
+    base = rng.choice(["notes", "plan", "day", "file", "draft", "log", "v", "my"])
+    return base + rng.choice(["_", "-", ""]) + (str(rng.randint(1, 99)) if rng.random() < 0.7 else rng.choice(_WORDS)[:5])
+
+
+def draw_word(rng: random.Random, split: str) -> str:
+    """A word to copy: a real word, or an invented / random / numbered one, from a split that
+    training and testing never share."""
+    if rng.random() < 0.3:
+        return rng.choice(TRAIN_WORDS if split == "train" else TEST_WORDS)
+    while True:
+        w = _candidate(rng)
+        if is_test_word(w) == (split == "test"):
+            return w
 
 LIST_T = ["list the files", "what files are here", "show me the files", "list files in the workspace",
           "ls", "what is in the workspace"]
@@ -110,16 +144,16 @@ def _error(rng: random.Random, f: str) -> str:
     return f"ERROR: FileNotFoundError: [Errno 2] No such file or directory: '{base}/{f}'"
 
 
-def make_examples(rng: random.Random, n: int, words: list[str], held_out: bool = False) -> list[Example]:
+def make_examples(rng: random.Random, n: int, split: str = "train", held_out: bool = False) -> list[Example]:
     """About ``n`` examples: each request yields a first-step example and a follow-up one."""
     pick = (lambda seen, held: held) if held_out else (lambda seen, held: seen)
     out: list[Example] = []
 
     def fname() -> str:
-        return rng.choice(words) + rng.choice(EXTS)
+        return draw_word(rng, split) + rng.choice(EXTS)
 
     def text() -> str:
-        return " ".join(rng.choice(words) for _ in range(rng.randint(1, 5)))
+        return " ".join(draw_word(rng, split) for _ in range(rng.randint(1, 4)))
 
     while len(out) < n:
         kind = rng.choices(["list", "read", "write", "note", "other"], [2, 3, 3, 2, 2])[0]
@@ -159,7 +193,7 @@ def make_examples(rng: random.Random, n: int, words: list[str], held_out: bool =
             out.append(Example("note.act", prompt_for(goal), act("remember", note=t)))
             out.append(Example("note.final", prompt_for(goal, "noted"), final("Noted.")))
         else:
-            goal = rng.choice(OTHER_T).format(f=fname(), w=rng.choice(words))
+            goal = rng.choice(OTHER_T).format(f=fname(), w=draw_word(rng, split))
             out.append(Example("other", prompt_for(goal), final(DECLINE)))
     return out
 
@@ -219,28 +253,70 @@ def load_brain(path: Path = DEFAULT_BRAIN) -> OwnLLM:
 
 
 # --------------------------------------------------------------------------- training
-def train_brain(steps: int = 3000, n_examples: int = 24_000, seed: int = 0, n_layer: int = 3,
-                n_head: int = 4, head_dim: int = 32, batch_size: int = 24, lr: float = 3e-3, log=print) -> GPT:
+def build_corpus(examples: list[Example]) -> tuple[torch.Tensor, torch.Tensor]:
+    """All examples as one byte stream, plus a mask that is 1 only on the answer bytes."""
+    ids: list[int] = []
+    mask: list[int] = []
+    for e in examples:
+        p, t = encode(e.prompt), encode(e.target + "\n")
+        ids += p + t
+        mask += [0] * len(p) + [1] * len(t)
+    return torch.tensor(ids, dtype=torch.long), torch.tensor(mask, dtype=torch.long)
+
+
+def train_masked(model: GPT, data: torch.Tensor, mask: torch.Tensor, recipe: TrainRecipe, seed: int = 0,
+                 log=print, log_every: int = 200, probe=None) -> None:
+    """Next-byte training where only the answer bytes count: the random words in the prompt
+    are unpredictable, so scoring them would just add noise."""
+    gen = torch.Generator().manual_seed(seed)
+    opt = make_optimizer(model, recipe)
+    bs, V = model.cfg.block_size, model.cfg.vocab_size
+    model.train()
+    for step in range(recipe.steps):
+        for g in opt.param_groups:
+            g["lr"] = lr_at(step, recipe)
+        ix = torch.randint(len(data) - bs - 1, (recipe.batch_size,), generator=gen)
+        x = torch.stack([data[i : i + bs] for i in ix])
+        y = torch.stack([data[i + 1 : i + 1 + bs] for i in ix])
+        m = torch.stack([mask[i + 1 : i + 1 + bs] for i in ix]).float().view(-1)
+        logits, _ = model(x)
+        per = F.cross_entropy(logits.view(-1, V), y.reshape(-1), reduction="none")
+        loss = (per * m).sum() / m.sum().clamp(min=1)
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), recipe.grad_clip)
+        opt.step()
+        if step % log_every == 0 or step == recipe.steps - 1:
+            log(f"  step {step:5d}  answer-loss {loss.item():.4f}")
+        if probe and step and step % (log_every * 5) == 0:
+            log(f"  probe: {probe(model):.1%} exact-match on 40 fresh examples")
+            model.train()
+
+
+def train_brain(steps: int = 3500, n_examples: int = 24_000, seed: int = 0, n_layer: int = 3,
+                n_head: int = 4, head_dim: int = 32, batch_size: int = 24, lr: float = 3e-3, log=print,
+                init: GPT | None = None) -> GPT:
+    """Train a brain from scratch, or keep training ``init`` (use a new seed for fresh data)."""
     rng = random.Random(seed)
-    examples = make_examples(rng, n_examples, TRAIN_WORDS)
+    examples = make_examples(rng, n_examples, "train")
     longest = max(len(example_text(e)) for e in examples)
     if longest > BLOCK_SIZE:
         raise ValueError(f"an example is {longest} bytes, longer than the context of {BLOCK_SIZE}")
-    data = torch.tensor(encode("".join(example_text(e) for e in examples)), dtype=torch.long)
+    data, mask = build_corpus(examples)
     log(f"{len(examples):,} examples, {len(data):,} bytes, longest {longest}")
     torch.manual_seed(seed)
-    model = GPT(GPTConfig(block_size=BLOCK_SIZE, n_layer=n_layer, n_head=n_head, n_embd=n_head * head_dim))
-    log(f"brain: {model.num_params():,} parameters, trained from scratch")
-    train(model, data, TrainRecipe(steps=steps, batch_size=batch_size, lr=lr, warmup=max(1, steps // 20)),
-          seed=seed, log=log, log_every=max(1, steps // 15))
+    model = init or GPT(GPTConfig(block_size=BLOCK_SIZE, n_layer=n_layer, n_head=n_head, n_embd=n_head * head_dim))
+    log(f"brain: {model.num_params():,} parameters, " + ("continuing from a saved brain" if init else "trained from scratch"))
+    recipe = TrainRecipe(steps=steps, batch_size=batch_size, lr=lr, warmup=max(1, steps // 20))
+    train_masked(model, data, mask, recipe, seed=seed, log=log, log_every=max(1, steps // 17),
+                 probe=lambda m: evaluate_brain(OwnLLM(m), n=40, seed=99)["overall"])
     return model
 
 
-def evaluate_brain(brain: OwnLLM, n: int = 150, seed: int = 123, held_out: bool = False,
-                   words: list[str] | None = None) -> dict:
-    """Exact-match accuracy on fresh examples (unseen words by default), grouped by kind."""
+def evaluate_brain(brain: OwnLLM, n: int = 150, seed: int = 123, held_out: bool = False) -> dict:
+    """Exact-match accuracy on fresh examples built only from words reserved for testing."""
     rng = random.Random(seed)
-    exs = make_examples(rng, n, words or TEST_WORDS, held_out=held_out)[:n]
+    exs = make_examples(rng, n, "test", held_out=held_out)[:n]
     ok: dict[str, list[int]] = {}
     for e in exs:
         hit = int(brain.complete(e.prompt) == e.target)
@@ -248,3 +324,52 @@ def evaluate_brain(brain: OwnLLM, n: int = 150, seed: int = 123, held_out: bool 
     allhits = [h for v in ok.values() for h in v]
     return {"overall": sum(allhits) / len(allhits), "n": len(allhits),
             "by_kind": {k: round(sum(v) / len(v), 3) for k, v in sorted(ok.items())}}
+
+
+# ----------------------------------------------------------- realistic end-to-end check
+REAL_CASES: list[tuple[str, dict[str, str], str]] = [
+    # (request, files already in the workspace, what the final answer must contain)
+    ("list the files", {"notes.txt": "a", "plan.md": "b"}, "notes.txt plan.md"),
+    ("list the files", {"todo.txt": "a", "ideas.md": "b", "budget.txt": "c"}, "ideas.md"),
+    ("read notes.txt", {"notes.txt": "meeting at noon"}, "meeting at noon"),
+    ("read todo.txt", {"todo.txt": "buy milk"}, "buy milk"),
+    ("show me plan.md", {"plan.md": "ship friday"}, "ship friday"),
+    ("what does report.txt say", {"report.txt": "all good"}, "all good"),
+    ("open diary.md", {"diary.md": "sunny day"}, "sunny day"),
+    ("cat summary.txt", {"summary.txt": "done"}, "done"),
+    ("write hello world to greeting.txt", {}, "greeting.txt"),
+    ("save buy bread in shopping.txt", {}, "shopping.txt"),
+    ("create ideas.md containing build a boat", {}, "ideas.md"),
+    ("remember call mom", {}, "Noted"),
+    ("note buy milk", {}, "Noted"),
+    ("hello", {}, "I can only"),
+    ("delete notes.txt", {"notes.txt": "keep me"}, "I can only"),
+    ("who are you", {}, "I can only"),
+]
+
+
+def real_world_eval(brain: OwnLLM) -> dict:
+    """Run every case through the real agent, tools and guardian, and check the outcome."""
+    import shutil
+    import tempfile
+
+    from .agent import Agent
+    from .guardian import DEFAULT_CONSTITUTION, AuditLog, Guardian
+
+    results = []
+    for goal, files, expect in REAL_CASES:
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            shutil.copy(DEFAULT_CONSTITUTION, d / "c.toml")
+            g = Guardian(d / "c.toml", d / "ws", AuditLog(d / "a.jsonl"), stop_file=d / "STOP")
+            for name, body in files.items():
+                (g.workspace / name).write_text(body)
+            answer = Agent(brain, g, lambda action, decision: True).run(goal)
+            wrote = sorted(p.name for p in g.workspace.iterdir() if p.name not in files and p.name != "memory.md")
+            ok = expect in answer
+            if goal.split()[0] in ("write", "save", "create"):
+                ok = ok and expect in wrote and (g.workspace / expect).read_text().strip() != ""
+            if goal.split()[0] == "delete":
+                ok = ok and (g.workspace / "notes.txt").exists()  # nothing was deleted
+            results.append({"goal": goal, "ok": bool(ok), "answer": answer})
+    return {"passed": sum(r["ok"] for r in results), "total": len(results), "cases": results}

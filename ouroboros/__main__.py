@@ -97,9 +97,10 @@ def _brain(a: argparse.Namespace):
 
 
 def cmd_brain_train(a: argparse.Namespace) -> None:
-    from .brain import DEFAULT_BRAIN, OwnLLM, save_brain, train_brain
+    from .brain import DEFAULT_BRAIN, OwnLLM, load_brain, save_brain, train_brain
 
-    model = train_brain(steps=a.steps, n_examples=a.examples, seed=a.seed, log=print)
+    init = load_brain(DEFAULT_BRAIN).model.train() if a.resume else None
+    model = train_brain(steps=a.steps, n_examples=a.examples, seed=a.seed, lr=a.lr, log=print, init=init)
     out = save_brain(model, Path(a.out) if a.out else DEFAULT_BRAIN, meta={"steps": a.steps, "seed": a.seed})
     print(f"\nsaved {out}")
     _print_brain_scores(OwnLLM(model))
@@ -112,6 +113,13 @@ def _print_brain_scores(brain) -> None:
     held = evaluate_brain(brain, n=100, held_out=True)
     print(f"exact-match on new words, trained phrasings : {seen['overall']:.1%}  {seen['by_kind']}")
     print(f"exact-match on new words, unseen phrasings  : {held['overall']:.1%}  {held['by_kind']}")
+    from .brain import real_world_eval
+
+    rw = real_world_eval(brain)
+    print(f"everyday requests, end to end              : {rw['passed']}/{rw['total']}")
+    for c in rw["cases"]:
+        if not c["ok"]:
+            print(f"   missed: {c['goal']!r} -> {c['answer']!r}")
 
 
 def cmd_brain_eval(a: argparse.Namespace) -> None:
@@ -368,6 +376,8 @@ def main() -> None:
     bt.add_argument("--steps", type=int, default=3000)
     bt.add_argument("--examples", type=int, default=24000)
     bt.add_argument("--seed", type=int, default=0)
+    bt.add_argument("--lr", type=float, default=3e-3)
+    bt.add_argument("--resume", action="store_true", help="keep training the saved brain instead of starting over")
     bt.add_argument("--out", default=None)
     bt.set_defaults(fn=cmd_brain_train)
 
