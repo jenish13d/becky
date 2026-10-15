@@ -44,7 +44,7 @@ def cmd_evolve(a: argparse.Namespace) -> None:
     cfg = EvolveConfig(
         generations=a.generations, children=a.children, steps=a.steps, seed_steps=a.seed_steps,
         max_params=a.max_params, max_flops=a.max_flops, margin=a.margin, patience=a.patience,
-        time_budget_s=a.time_budget, control=not a.no_control, seed=a.seed,
+        time_budget_s=a.time_budget, control=not a.no_control, seed=a.seed, escalations=a.escalations,
         device=_device(a.device), sample_prompt=a.prompt,
     )
     lineage = evolve(splits, cfg, Path(a.out))
@@ -120,6 +120,30 @@ def _print_brain_scores(brain) -> None:
     for c in rw["cases"]:
         if not c["ok"]:
             print(f"   missed: {c['goal']!r} -> {c['answer']!r}")
+
+
+def cmd_brain_improve(a: argparse.Namespace) -> None:
+    from .brain import DEFAULT_BRAIN, load_brain
+    from .grow import GrowConfig, adopt, grow
+
+    cfg = GrowConfig(rounds=a.rounds, steps=a.steps, time_budget_s=a.time_budget, eval_n=a.eval_n, seed=a.seed,
+                     max_params=a.max_params)
+    out = Path(a.out)
+    j = grow(load_brain(DEFAULT_BRAIN).model.train(), cfg, out)
+    print(f"\nimproved brain saved to {out / 'champion.pt'} (journal: {out / 'journal.json'})")
+    if not a.apply:
+        print("Becky's own brain is unchanged. Re-run with --apply to be asked about adopting it.")
+        return
+
+    def confirm(summary: str) -> bool:
+        print("\n" + summary)
+        return input("Make this Becky's brain? The old one is kept as brain.previous.pt  [y/N] ").strip().lower() in ("y", "yes")
+
+    try:
+        done = adopt(out / "champion.pt", DEFAULT_BRAIN, confirm)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    print("adopted." if done else "left unchanged.")
 
 
 def cmd_brain_eval(a: argparse.Namespace) -> None:
@@ -302,6 +326,8 @@ def main() -> None:
     e.add_argument("--max-flops", type=float, default=d.max_flops)
     e.add_argument("--margin", type=float, default=d.margin)
     e.add_argument("--patience", type=int, default=d.patience)
+    e.add_argument("--escalations", type=int, default=d.escalations,
+                   help="when stuck, widen the search this many times before stopping")
     e.add_argument("--time-budget", type=float, default=None, help="seconds")
     e.add_argument("--no-control", action="store_true")
     e.add_argument("--out", default="runs/evo")
@@ -380,6 +406,17 @@ def main() -> None:
     bt.add_argument("--resume", action="store_true", help="keep training the saved brain instead of starting over")
     bt.add_argument("--out", default=None)
     bt.set_defaults(fn=cmd_brain_train)
+
+    bi = sub.add_parser("brain-improve", help="keep improving Becky's brain; change tactics when stuck")
+    bi.add_argument("--rounds", type=int, default=8)
+    bi.add_argument("--steps", type=int, default=600, help="training steps per round")
+    bi.add_argument("--time-budget", type=float, default=None, help="seconds")
+    bi.add_argument("--eval-n", type=int, default=120)
+    bi.add_argument("--max-params", type=int, default=3_000_000)
+    bi.add_argument("--seed", type=int, default=0)
+    bi.add_argument("--out", default="runs/brain-improve")
+    bi.add_argument("--apply", action="store_true", help="afterwards, ask whether to adopt the improved brain")
+    bi.set_defaults(fn=cmd_brain_improve)
 
     be = sub.add_parser("brain-eval", help="score Becky's brain on fresh examples")
     be.add_argument("--path", default=None)

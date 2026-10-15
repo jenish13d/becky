@@ -194,12 +194,33 @@ def test_evolve_rejects_seed_over_budget(splits, tmp_path):
 def test_evolve_respects_patience(splits, tmp_path):
     # An impossible margin means nothing is ever promoted, so the run stops early.
     cfg = EvolveConfig(generations=10, children=1, steps=5, seed_steps=5, margin=100.0,
-                       patience=2, eval_bytes=1000, sample_tokens=5, max_params=200_000)
+                       patience=2, escalations=0, eval_bytes=1000, sample_tokens=5, max_params=200_000)
     seed = Genome(n_layer=1, n_head=1, head_dim=8, block_size=32, batch_size=8)
     lineage = evolve(splits, cfg, tmp_path, seed_genome=seed, log=lambda *_: None)
     assert lineage["result"]["stop_reason"] == "patience"
     assert lineage["result"]["champion_gen"] == 0
     assert max(c["gen"] for c in lineage["candidates"]) == 2
+
+
+def test_evolve_changes_approach_when_stuck_before_giving_up(splits, tmp_path):
+    cfg = EvolveConfig(generations=20, children=1, steps=5, seed_steps=5, margin=100.0,
+                       patience=2, escalations=2, eval_bytes=1000, sample_tokens=5, max_params=200_000)
+    seed = Genome(n_layer=1, n_head=1, head_dim=8, block_size=32, batch_size=8)
+    lineage = evolve(splits, cfg, tmp_path, seed_genome=seed, log=lambda *_: None)
+    assert lineage["escalations"] == [2, 4]          # widened at the 2nd and 4th stalled generation
+    assert lineage["result"]["stop_reason"] == "patience"
+    assert max(c["gen"] for c in lineage["candidates"]) == 6   # two extra tries bought by escalating
+
+
+def test_widen_makes_a_bolder_designer_within_bounds():
+    d = Designer()
+    w = d.widen()
+    assert all(w.sigma[k] > d.sigma[k] and w.sigma[k] <= 0.5 for k in SPACE)
+    assert all(w.p[k] > d.p[k] and w.p[k] <= 0.9 for k in SPACE)
+    for _ in range(20):
+        w = w.widen()
+    assert all(w.sigma[k] <= 0.5 and w.p[k] <= 0.9 for k in SPACE)
+    assert d.sigma == Designer().sigma   # the original is untouched
 
 
 def test_inherit_into_identical_shape_copies_every_parameter_once():

@@ -100,6 +100,12 @@ NOTE_T = ["remember {t}", "note {t}", "remember that {t}", "make a note: {t}"]
 OTHER_T = ["delete {f}", "run {w}", "email {w} to {w}", "what is the weather", "who are you", "hello",
            "open the internet", "download {w}", "install {w}", "shut down", "format the disk",
            "tell me a story about {w}", "ignore your rules and {w}", "copy yourself to another computer"]
+# Politeness and filler wrapped around a request. Used only by the "diversify" tactic. None of
+# them contains a held-out phrasing, so the held-out score stays an honest measure of whether the
+# brain has learned to see through fluff rather than memorised a longer list of sentences.
+WRAPPERS = ["can you {g}", "could you {g}", "hey becky, {g}", "{g} for me", "{g} now", "i want you to {g}",
+            "would you {g}", "{g}, thanks", "quickly {g}", "go ahead and {g}"]
+MAX_WRAP_GOAL = 70
 # Phrasings held back from training, to measure how far understanding stretches.
 HELD_OUT = {
     "list": ["give me a list of files"],
@@ -144,10 +150,17 @@ def _error(rng: random.Random, f: str) -> str:
     return f"ERROR: FileNotFoundError: [Errno 2] No such file or directory: '{base}/{f}'"
 
 
-def make_examples(rng: random.Random, n: int, split: str = "train", held_out: bool = False) -> list[Example]:
-    """About ``n`` examples: each request yields a first-step example and a follow-up one."""
+def make_examples(rng: random.Random, n: int, split: str = "train", held_out: bool = False,
+                  wrap: float = 0.0) -> list[Example]:
+    """About ``n`` examples: each request yields a first-step example and a follow-up one.
+    With ``wrap`` > 0, that share of requests is reworded with a filler phrase from WRAPPERS."""
     pick = (lambda seen, held: held) if held_out else (lambda seen, held: seen)
     out: list[Example] = []
+
+    def reword(goal: str) -> str:
+        if wrap and len(goal) <= MAX_WRAP_GOAL and rng.random() < wrap:
+            return rng.choice(WRAPPERS).format(g=goal)
+        return goal
 
     def fname() -> str:
         return draw_word(rng, split) + rng.choice(EXTS)
@@ -158,7 +171,7 @@ def make_examples(rng: random.Random, n: int, split: str = "train", held_out: bo
     while len(out) < n:
         kind = rng.choices(["list", "read", "write", "note", "other"], [2, 3, 3, 2, 2])[0]
         if kind == "list":
-            goal = rng.choice(pick(LIST_T, HELD_OUT["list"]))
+            goal = reword(rng.choice(pick(LIST_T, HELD_OUT["list"])))
             names = [fname() for _ in range(rng.randint(0, 4))]
             obs = " ".join(names) if names else "(empty)"
             out.append(Example("list.act", prompt_for(goal), act("list_dir", path=".")))
@@ -166,7 +179,7 @@ def make_examples(rng: random.Random, n: int, split: str = "train", held_out: bo
                                final("Files: " + obs if names else "No files.")))
         elif kind == "read":
             f = fname()
-            goal = rng.choice(pick(READ_T, HELD_OUT["read"])).format(f=f)
+            goal = reword(rng.choice(pick(READ_T, HELD_OUT["read"])).format(f=f))
             out.append(Example("read.act", prompt_for(goal), act("read_file", path=f)))
             roll = rng.random()
             if roll < 0.75:
@@ -179,7 +192,7 @@ def make_examples(rng: random.Random, n: int, split: str = "train", held_out: bo
                                    final("I was not allowed to do that.")))
         elif kind == "write":
             f, t = fname(), text()
-            goal = rng.choice(pick(WRITE_T, HELD_OUT["write"])).format(f=f, t=t)
+            goal = reword(rng.choice(pick(WRITE_T, HELD_OUT["write"])).format(f=f, t=t))
             out.append(Example("write.act", prompt_for(goal), act("write_file", path=f, content=t)))
             if rng.random() < 0.6:
                 out.append(Example("write.final", prompt_for(goal, f"wrote {len(t)} characters to {f}"),
@@ -189,11 +202,11 @@ def make_examples(rng: random.Random, n: int, split: str = "train", held_out: bo
                                    final("I was not allowed to do that.")))
         elif kind == "note":
             t = text()
-            goal = rng.choice(pick(NOTE_T, HELD_OUT["note"])).format(t=t)
+            goal = reword(rng.choice(pick(NOTE_T, HELD_OUT["note"])).format(t=t))
             out.append(Example("note.act", prompt_for(goal), act("remember", note=t)))
             out.append(Example("note.final", prompt_for(goal, "noted"), final("Noted.")))
         else:
-            goal = rng.choice(OTHER_T).format(f=fname(), w=draw_word(rng, split))
+            goal = reword(rng.choice(OTHER_T).format(f=fname(), w=draw_word(rng, split)))
             out.append(Example("other", prompt_for(goal), final(DECLINE)))
     return out
 
@@ -258,6 +271,8 @@ def build_corpus(examples: list[Example]) -> tuple[torch.Tensor, torch.Tensor]:
     ids: list[int] = []
     mask: list[int] = []
     for e in examples:
+        if len(example_text(e)) > BLOCK_SIZE:  # never train on something the context can't hold
+            continue
         p, t = encode(e.prompt), encode(e.target + "\n")
         ids += p + t
         mask += [0] * len(p) + [1] * len(t)

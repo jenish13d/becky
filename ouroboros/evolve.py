@@ -176,6 +176,14 @@ class Designer:
                 return child
         return None
 
+    def widen(self, factor: float = 1.6) -> "Designer":
+        """A bolder copy, for when the search is stuck: bigger steps, more knobs touched."""
+        wider = copy.deepcopy(self)
+        for k in SPACE:
+            wider.sigma[k] = min(0.5, self.sigma[k] * factor)
+            wider.p[k] = min(0.9, self.p[k] + 0.2)
+        return wider
+
     def learn(self, parent: Genome, child: Genome) -> None:
         """Remember the step that produced a promotion as a drift direction."""
         pu, cu = parent.unit(), child.unit()
@@ -198,7 +206,8 @@ class EvolveConfig:
     max_params: int = 2_000_000
     max_flops: float = 5e13
     margin: float = 0.002  # bpb a child must beat the champion by
-    patience: int = 3  # stop after this many generations without promotion
+    patience: int = 3  # generations without promotion before the search counts as stuck
+    escalations: int = 2  # when stuck, widen the search this many times before giving up
     time_budget_s: float | None = None
     eval_bytes: int = 50_000
     control: bool = True
@@ -295,6 +304,7 @@ def evolve(
     record_champion(champ)
 
     stale = 0
+    widened = 0
     stop_reason = "generations"
     for gen in range(1, cfg.generations + 1):
         if cfg.time_budget_s is not None and time.time() - t0 > cfg.time_budget_s:
@@ -344,13 +354,23 @@ def evolve(
             champ = best
             record_champion(champ)
             stale = 0
+            widened = 0
         else:
             stale += 1
             log(f"gen {gen}: no child beat the champion by {cfg.margin} bpb ({stale}/{cfg.patience})")
             write_lineage()
             if stale >= cfg.patience:
-                stop_reason = "patience"
-                break
+                if widened < cfg.escalations:
+                    widened += 1
+                    stale = 0
+                    champ.designer = champ.designer.widen()
+                    lineage.setdefault("escalations", []).append(gen)
+                    log(f"gen {gen}: stuck, so changing approach: bolder steps, more knobs "
+                        f"({widened}/{cfg.escalations})")
+                    write_lineage()
+                else:
+                    stop_reason = "patience"
+                    break
 
     # ---- final report: test split, touched once ---------------------------
     test_bpb = bits_per_byte(champ.model, splits.test)

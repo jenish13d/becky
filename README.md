@@ -16,7 +16,7 @@ It runs on a laptop CPU in minutes, and every decision it makes is written to di
 | `ouroboros/evolve.py` | The self-improvement loop: `Genome` (design + training recipe), `Designer` (the policy that proposes successors), budgets, promotion, lineage log. |
 | `ouroboros/selfedit.py` + `organism.py` | **Permission-gated self-improving *code*:** a program that reads its own source, proposes an upgrade to a bounded region of itself, proves it on a held-out task, and rewrites itself only after a human approves the diff. |
 | `ouroboros/guardian.py` + `agent.py` | **Becky**: a local agent whose moral code (`constitution.toml`) is enforced by a guardian outside the model. |
-| `tests/` | 158 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
+| `tests/` | 196 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
 
 ## How one generation works
 
@@ -64,13 +64,26 @@ It is not AGI and it is not sentient. It is a program that improves a small, wel
 
 ## Becky: an agent that lives under a moral code
 
-`python -m ouroboros becky "summarise notes.txt"` runs a small agent on **your own device** (a local model through [Ollama](https://ollama.com), no cloud). The model only *proposes* actions; a guardian that runs outside the model decides whether they happen.
+`python -m ouroboros becky "read notes.txt"` runs a small agent on **your own device** with **her own brain**: a model trained from scratch by this project (`ouroboros/brain.pt`), with no Ollama, no outside model and no cloud. The model only *proposes* actions; a guardian that runs outside the model decides whether they happen. (An outside model is available only if you ask for it: `--brain ollama`.)
+
+New here? **[GETTING_STARTED.md](GETTING_STARTED.md)** has every step, in order, for Windows.
 
 ```bash
-ollama pull llama3.2
-python -m ouroboros becky "read notes.txt and write a summary to summary.txt" --workspace becky_workspace
+python -m ouroboros becky "read notes.txt"
 python -m ouroboros audit          # verify the audit log's hash chain
 ```
+
+### Her brain
+
+A 656k-parameter GPT trained from scratch to turn a request into one of her four tool actions (`brain.py`). It is deliberately narrow: it understands list / read / write / remember in a handful of phrasings and declines everything else. Measured on fresh examples built only from **words reserved for testing** (never seen in training):
+
+| Check | Result |
+| --- | --- |
+| Exact-match, phrasings it was trained on | **~99%** |
+| Exact-match, phrasings it never saw (e.g. `please read x`) | **~54-64%**, the weak spot |
+| 16 everyday requests through the real agent, tools and guardian | **16 / 16** |
+
+The first version scored 35% and turned `notes.txt` into `noteso.txt`: it had memorised its small vocabulary and padded unfamiliar words into familiar shapes. The fix was a harder training distribution (real, invented, random-letter and numbered words, from a split training never touches) with the loss counted on the answer bytes only. A wrong guess is never executed unchecked: every action goes through the guardian, and writes ask you.
 
 The moral code is `ouroboros/constitution.toml`, and it is **enforced in code, not requested in a prompt**:
 
@@ -116,6 +129,22 @@ Bounds: at most 10 tasks, each limited by the guardian's step budget, all of the
 **Limits, stated plainly.** This governs the tools Becky is given; it cannot make a model "good". A hash chain reveals tampering but can't stop someone with full disk access from rewriting the whole log. A bug in `guardian.py` is a hole. It is a seatbelt, not a conscience.
 
 The confinement and the tool set live in the code, so editing the constitution can change *how much she asks you*, but cannot grant her a shell or let her out of her workspace.
+
+## Keep improving, and when stuck, change approach
+
+`python -m ouroboros brain-improve` is a loop for Becky's brain. Each round it trains a candidate and scores it on freshly generated held-out examples. If the candidate isn't clearly better, the round counts as **stuck**, and the next round switches to a different tactic, climbing a ladder from cheap to expensive:
+
+1. **fresh**: more training on newly generated data
+2. **failures**: find the champion's own mistakes and train on them harder
+3. **diversify**: the same requests reworded many ways, so it learns to see through fluff
+4. **polish**: a lower learning rate and twice the steps
+5. **grow**: add a layer, keeping everything already learned
+
+Any real improvement returns to the cheapest tactic. It stops only when every tactic has failed in a row, and then says so. `evolve` does the same for model design: when stuck, it widens its search before giving up.
+
+Guard rails: a candidate must beat the champion by a margin larger than the measurement noise; must not get worse on the everyday-request check; and must not slip on the core phrasings (see below). The improved brain is saved as a proposal; it replaces hers only through `--apply`, which shows the scores and asks, and refuses outright if it isn't better.
+
+**A real run, and what it taught.** From a start of 75.0%, the loop got stuck on `fresh` and `failures`, switched to `diversify`, and that produced the jump (82.0% to 86.5%), reaching 86.5% overall. Checking the result independently on 200 new examples showed the trade-off the loop hadn't seen: unseen phrasings rose from 63.5% to 77.5%, but writes with the standard phrasings fell from 97% to 86%. The loop's rules had allowed that, so the rule was fixed: a candidate is now blocked if it regresses on the core phrasings, however much it gains elsewhere. That run's candidate was **not** adopted; the shipped brain is unchanged. The fixed loop hasn't been re-run for a full hour-long pass yet, so treat further gains as unproven until you run it.
 
 ## Neuromorphic: a spiking neural network
 
