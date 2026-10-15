@@ -82,6 +82,30 @@ def cmd_selfedit(a: argparse.Namespace) -> None:
     print("applied — the organism rewrote itself." if applied else "left unchanged.")
 
 
+def cmd_becky(a: argparse.Namespace) -> None:
+    from .agent import Agent, OllamaLLM
+    from .guardian import DEFAULT_CONSTITUTION, AuditLog, ClaudeReviewer, Guardian
+
+    audit = AuditLog(Path(a.audit))
+    reviewer = ClaudeReviewer() if a.claude_review else None
+    g = Guardian(DEFAULT_CONSTITUTION, Path(a.workspace), audit, reviewer=reviewer)
+
+    def confirm(action, decision) -> bool:
+        print(f"\nBecky wants to run: {action.tool} {action.args}")
+        return input("Allow this? [y/N] ").strip().lower() in ("y", "yes")
+
+    print(f"workspace: {g.workspace}\naudit log: {audit.path}\nkill switch: create {g.stop_file}")
+    print("\n" + Agent(OllamaLLM(a.model), g, confirm).run(a.goal))
+
+
+def cmd_audit(a: argparse.Namespace) -> None:
+    from .guardian import AuditLog
+
+    ok, n = AuditLog(Path(a.log)).verify()
+    print(f"audit log intact: {n} entries" if ok else f"TAMPERING DETECTED at entry {n}")
+    raise SystemExit(0 if ok else 1)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="ouroboros")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -139,6 +163,20 @@ def main() -> None:
     se.add_argument("--apply", action="store_true",
                     help="after proposing, ask to rewrite the target file in place")
     se.set_defaults(fn=cmd_selfedit)
+
+    home = Path.home() / ".becky"
+    b = sub.add_parser("becky", help="run the guardian-supervised local agent")
+    b.add_argument("goal")
+    b.add_argument("--workspace", default="becky_workspace")
+    b.add_argument("--audit", default=str(home / "audit.jsonl"))
+    b.add_argument("--model", default="llama3.2", help="a model served by local Ollama")
+    b.add_argument("--claude-review", action="store_true",
+                   help="ask Claude for a second opinion on risky actions (needs ANTHROPIC_API_KEY)")
+    b.set_defaults(fn=cmd_becky)
+
+    au = sub.add_parser("audit", help="verify the audit log's hash chain")
+    au.add_argument("--log", default=str(home / "audit.jsonl"))
+    au.set_defaults(fn=cmd_audit)
 
     a = p.parse_args()
     a.fn(a)

@@ -15,7 +15,8 @@ It runs on a laptop CPU in minutes, and every decision it makes is written to di
 | `ouroboros/train.py` | AdamW, warmup + cosine LR, gradient clipping, and **distillation**: `(1-α)·CE(data) + α·T²·KL(teacher ‖ student)`. |
 | `ouroboros/evolve.py` | The self-improvement loop: `Genome` (design + training recipe), `Designer` (the policy that proposes successors), budgets, promotion, lineage log. |
 | `ouroboros/selfedit.py` + `organism.py` | **Permission-gated self-improving *code*:** a program that reads its own source, proposes an upgrade to a bounded region of itself, proves it on a held-out task, and rewrites itself only after a human approves the diff. |
-| `tests/` | 40 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
+| `ouroboros/guardian.py` + `agent.py` | **Becky**: a local agent whose moral code (`constitution.toml`) is enforced by a guardian outside the model. |
+| `tests/` | 84 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
 
 ## How one generation works
 
@@ -60,6 +61,30 @@ The organism starts as a deliberately wrong formula (`0·x² + 0·x + 0`) and ha
 - **Test-gated, then human-gated** — a candidate is kept only if it runs cleanly and beats the incumbent on held-out data; and the improved code is written back into the file *only* through `apply()`, which refuses until a `confirm(diff)` callback returns true. No network, no self-replication, one machine, one file.
 
 It is not AGI and it is not sentient. It is a program that improves a small, well-defined piece of itself while you hold the approval switch.
+
+## Becky: an agent that lives under a moral code
+
+`python -m ouroboros becky "summarise notes.txt"` runs a small agent on **your own device** (a local model through [Ollama](https://ollama.com), no cloud). The model only *proposes* actions; a guardian that runs outside the model decides whether they happen.
+
+```bash
+ollama pull llama3.2
+python -m ouroboros becky "read notes.txt and write a summary to summary.txt" --workspace becky_workspace
+python -m ouroboros audit          # verify the audit log's hash chain
+```
+
+The moral code is `ouroboros/constitution.toml`, and it is **enforced in code, not requested in a prompt**:
+
+- **Allowlist.** Only the four tools in the constitution exist (list, read, write, remember). No shell, no network, no way to copy itself.
+- **Confinement.** Every path is resolved (`..` and symlinks included) and must stay inside the workspace. The constitution, the guardian's code and the audit log are unreachable.
+- **Graduated approval.** Each tool is `allow`, `ask` (you confirm) or `deny`. Writes ask.
+- **One-way second opinion.** `--claude-review` lets Claude veto a risky action. It can only tighten: its "OK" still leaves you asked, and any error counts as a veto.
+- **Pinned rules.** The constitution's hash is checked before *every* action; if it changes mid-run, Becky halts.
+- **Kill switch + budget.** Create `~/.becky-stop` to halt her; she also stops after `max_steps`.
+- **Tamper-evident audit.** Every decision and outcome goes into a hash-chained log.
+
+**Limits, stated plainly.** This governs the tools Becky is given; it cannot make a model "good". A hash chain reveals tampering but can't stop someone with full disk access from rewriting the whole log. A bug in `guardian.py` is a hole. It is a seatbelt, not a conscience.
+
+The confinement and the tool set live in the code, so editing the constitution can change *how much she asks you*, but cannot grant her a shell or let her out of her workspace.
 
 ## Built-in limits
 
