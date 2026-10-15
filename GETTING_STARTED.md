@@ -1,5 +1,32 @@
 # Getting started: run your own AI, step by step (Windows)
 
+## The easy way (two double-clicks)
+
+1. Install Python from python.org and **tick "Add python.exe to PATH"** (skip if you already have it).
+2. Unzip the project anywhere (or `git clone https://github.com/jenish13d/becky.git`).
+3. Double-click **`setup.bat`**. It installs everything (a few minutes, once).
+4. Double-click **`start.bat`**. The first time, it asks you to choose your passphrase (nothing
+   shows while you type; that is normal). Then you are talking to Becky:
+
+```
+you> list the files
+you> read notes.txt
+you> write hello world to greeting.txt        <- she asks first; type y to allow
+you> improve                                  <- she trains a better version of herself
+you> review                                   <- she inspects her own layers and speed
+you> compress                                 <- a smaller copy of her brain
+you> memory dentist                           <- search her notes
+you> quit
+```
+
+`improve` takes about 30 minutes. When it finishes it shows `current brain X% -> candidate Y%`
+and asks whether to keep it. She never swaps her own brain without your yes, and your old
+brain is kept as `ouroboros\brain.previous.pt`.
+
+Everything below is the long version with every individual command, in case you want it.
+
+---
+
 Everything here runs **on your own PC**. There is no Ollama, no Llama, no cloud model and no
 API key. Becky's brain is a small model trained from scratch by this project; its weights are
 the file `ouroboros\brain.pt` inside the project.
@@ -104,6 +131,8 @@ request into one of four actions. These phrasings work reliably:
 | Read a file | `read notes.txt` · `show me notes.txt` · `open notes.txt` · `what does notes.txt say` · `cat notes.txt` |
 | Write a file | `write hello world to greeting.txt` · `save hello world in greeting.txt` · `create greeting.txt containing hello world` |
 | Save a note | `remember call mom` · `note call mom` · `make a note: call mom` |
+
+**Known limit: keep contents short.** She copies words back reliably up to about **4 words** (5 mostly work, 6 is shaky, 8 or more fails). So `read notes.txt` on a long file will return a garbled version, and `write` is best used with short text. This is what to improve next: her training only ever contained short contents.
 
 File names should be letters, digits, `_` or `-` ending in `.txt` or `.md`. Anything else
 (`hello`, `delete x`, `who are you`) gets the answer *"I can only list files, read a file,

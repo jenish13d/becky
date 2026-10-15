@@ -175,6 +175,91 @@ def cmd_memory_dedupe(a: argparse.Namespace) -> None:
     print(f"removed {len(removed)} repeated note(s)" + ("".join(f"\n  - {n}" for n in removed) if removed else ""))
 
 
+def cmd_chat(a: argparse.Namespace) -> None:
+    import getpass
+
+    from .agent import Agent
+    from .anchor import create_anchor, verify_anchor
+    from .brain import DEFAULT_BRAIN, load_brain
+    from .chat import Chat
+    from .compress import compress_report
+    from .grow import GrowConfig, adopt, grow
+    from .guardian import DEFAULT_CONSTITUTION, AuditLog, Guardian
+    from .memory import Memory
+    from .owner import OwnerError, is_initialised
+    from .review import render, review
+
+    owner_dir, workspace = Path(a.owner_dir), Path(a.workspace)
+    if not is_initialised(owner_dir):
+        print("First time: choose the passphrase that makes Becky answer only to you.\n")
+        cmd_init_owner(argparse.Namespace(owner_dir=str(owner_dir)))
+        print()
+    _require_anchor(owner_dir)
+    if not workspace.exists():  # first run: give her something to read
+        workspace.mkdir(parents=True)
+        (workspace / "notes.txt").write_text("welcome to becky\n", encoding="utf-8")
+        print(f"Created her workspace with a sample notes.txt: {workspace.resolve()}\n")
+    audit = AuditLog(Path(a.audit))
+    state = {"brain": load_brain(DEFAULT_BRAIN)}
+
+    def confirm(action, decision) -> bool:
+        print(f"\nBecky wants to run: {action.tool} {action.args}")
+        return input("Allow this? [y/N] ").strip().lower() in ("y", "yes")
+
+    def run_request(goal: str) -> str:
+        try:
+            g = Guardian(DEFAULT_CONSTITUTION, workspace, audit, owner_dir=owner_dir)
+        except OwnerError as exc:
+            return f"Refusing to run: {exc}"
+        return Agent(state["brain"], g, confirm).run(goal)
+
+    def improve() -> str:
+        out = Path(a.runs) / "brain-improve"
+        print("Improving her brain. This takes about 30 minutes; press Ctrl+C to stop early.\n")
+        cfg = GrowConfig(rounds=4, steps=300, eval_n=80, time_budget_s=1800)
+        grow(state["brain"].model.train(), cfg, out)
+        if not (out / "champion.pt").exists():
+            return "No improved brain was produced."
+
+        def keep(summary: str) -> bool:
+            print("\n" + summary)
+            return input("Make this her brain? Your current one is kept as brain.previous.pt [y/N] ").strip().lower() in ("y", "yes")
+
+        try:
+            adopted = adopt(out / "champion.pt", DEFAULT_BRAIN, keep)
+        except ValueError as exc:
+            return f"Left her brain unchanged: {exc}"
+        if not adopted:
+            return "Left her brain unchanged."
+        state["brain"] = load_brain(DEFAULT_BRAIN)
+        report = verify_anchor(owner_dir)
+        if report.present and not report.ok:
+            print("\nHer brain changed, so her integrity anchor must be updated or she will refuse to start next time.")
+            try:
+                create_anchor(owner_dir, getpass.getpass("Owner passphrase to re-anchor: "))
+                return "Her brain is updated and re-anchored."
+            except OwnerError as exc:
+                return f"Her brain is updated, but re-anchoring failed ({exc}). Run:  python -m ouroboros anchor"
+        return "Her brain is updated."
+
+    def do_review() -> str:
+        return render(review(state["brain"].model, eval_n=30, speed_prompts=8))
+
+    def do_compress() -> str:
+        out = Path(a.runs) / "brain-int8.pt"
+        r = compress_report(state["brain"].model, out, source=DEFAULT_BRAIN, eval_n=60)
+        verdict = "Safe to use" if r["safe"] else "NOT safe: accuracy dropped too much"
+        return (f"{r['size_before_bytes']:,} -> {r['size_after_bytes']:,} bytes (x{r['ratio']:.1f} smaller); "
+                f"accuracy {r['accuracy_before']:.0%} -> {r['accuracy_after']:.0%}. {verdict}: {out}")
+
+    def search(query: str) -> str:
+        hits = Memory(workspace / "memory.md").search(query)
+        return "\n".join(f"{s:.2f}  {n}" for s, n in hits) or "nothing relevant in memory"
+
+    print(f"workspace: {workspace.resolve()}   audit log: {audit.path}\nkill switch: create {Path.home() / '.becky-stop'}\n")
+    Chat(run_request, print, input, improve, do_review, do_compress, search).loop()
+
+
 def cmd_anchor(a: argparse.Namespace) -> None:
     import getpass
 
@@ -502,6 +587,13 @@ def main() -> None:
     md = sub.add_parser("memory-dedupe", help="remove repeated notes from memory.md")
     md.add_argument("--workspace", default="becky_workspace")
     md.set_defaults(fn=cmd_memory_dedupe)
+
+    ch = sub.add_parser("chat", help="talk to Becky: type requests, or `improve`")
+    ch.add_argument("--workspace", default="becky_workspace")
+    ch.add_argument("--audit", default=str(home / "audit.jsonl"))
+    ch.add_argument("--owner-dir", default=str(home))
+    ch.add_argument("--runs", default="runs")
+    ch.set_defaults(fn=cmd_chat)
 
     an = sub.add_parser("anchor", help="fingerprint and sign her brain, rules and code (needs your passphrase)")
     an.add_argument("--owner-dir", default=str(home))

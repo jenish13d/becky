@@ -16,7 +16,7 @@ It runs on a laptop CPU in minutes, and every decision it makes is written to di
 | `ouroboros/evolve.py` | The self-improvement loop: `Genome` (design + training recipe), `Designer` (the policy that proposes successors), budgets, promotion, lineage log. |
 | `ouroboros/selfedit.py` + `organism.py` | **Permission-gated self-improving *code*:** a program that reads its own source, proposes an upgrade to a bounded region of itself, proves it on a held-out task, and rewrites itself only after a human approves the diff. |
 | `ouroboros/guardian.py` + `agent.py` | **Becky**: a local agent whose moral code (`constitution.toml`) is enforced by a guardian outside the model. |
-| `tests/` | 225 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
+| `tests/` | 236 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
 
 ## How one generation works
 
@@ -62,6 +62,10 @@ The organism starts as a deliberately wrong formula (`0·x² + 0·x + 0`) and ha
 
 It is not AGI and it is not sentient. It is a program that improves a small, well-defined piece of itself while you hold the approval switch.
 
+## Just run it
+
+Windows, no commands: double-click **`setup.bat`** once, then **`start.bat`**, and talk to her. Type `improve` and she trains a better version of her own brain, and asks before swapping it in. Full walkthrough: [GETTING_STARTED.md](GETTING_STARTED.md).
+
 ## Becky: an agent that lives under a moral code
 
 `python -m ouroboros becky "read notes.txt"` runs a small agent on **your own device** with **her own brain**: a model trained from scratch by this project (`ouroboros/brain.pt`), with no Ollama, no outside model and no cloud. The model only *proposes* actions; a guardian that runs outside the model decides whether they happen. (An outside model is available only if you ask for it: `--brain ollama`.)
@@ -83,7 +87,7 @@ A 656k-parameter GPT trained from scratch to turn a request into one of her four
 | Exact-match, phrasings it never saw (e.g. `please read x`) | **~54-64%**, the weak spot |
 | 16 everyday requests through the real agent, tools and guardian | **16 / 16** |
 
-The first version scored 35% and turned `notes.txt` into `noteso.txt`: it had memorised its small vocabulary and padded unfamiliar words into familiar shapes. The fix was a harder training distribution (real, invented, random-letter and numbered words, from a split training never touches) with the loss counted on the answer bytes only. A wrong guess is never executed unchecked: every action goes through the guardian, and writes ask you.
+The first version scored 35% and turned `notes.txt` into `noteso.txt`: it had memorised its small vocabulary and padded unfamiliar words into familiar shapes. The fix was a harder training distribution (real, invented, random-letter and numbered words, from a split training never touches) with the loss counted on the answer bytes only. **Known limit:** she copies file contents back reliably up to about 4 words (24-25 of 25 exact), 22/25 at 5, 12/25 at 6, and 0/25 at 8, because her training only contained short contents. A longer-content tactic for `improve` is the obvious next step. A wrong guess is never executed unchecked: every action goes through the guardian, and writes ask you.
 
 The moral code is `ouroboros/constitution.toml`, and it is **enforced in code, not requested in a prompt**:
 
