@@ -53,6 +53,22 @@ class CausalSelfAttention(nn.Module):
         return self.resid_drop(self.proj(y))
 
 
+    def forward_cached(self, x: torch.Tensor, past=None):
+        """Attention that keeps keys/values so new tokens don't recompute old ones.
+
+        ``past`` is None for the first (prompt) pass, which is causal as usual; afterwards each
+        call takes exactly one new token that may attend to everything before it.
+        """
+        B, T, C = x.shape
+        if past is not None and T != 1:
+            raise ValueError("cached decoding takes one token at a time")
+        q, k, v = (t.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) for t in self.qkv(x).split(C, dim=2))
+        if past is not None:
+            k, v = torch.cat([past[0], k], dim=2), torch.cat([past[1], v], dim=2)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=past is None)
+        return self.proj(y.transpose(1, 2).contiguous().view(B, T, C)), (k, v)
+
+
 class MLP(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
@@ -75,6 +91,12 @@ class Block(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln1(x))
         return x + self.mlp(self.ln2(x))
+
+
+    def forward_cached(self, x: torch.Tensor, past=None):
+        a, kv = self.attn.forward_cached(self.ln1(x), past)
+        x = x + a
+        return x + self.mlp(self.ln2(x)), kv
 
 
 class GPT(nn.Module):
@@ -120,6 +142,32 @@ class GPT(nn.Module):
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1))
         return logits, loss
+
+    @torch.no_grad()
+    def prefill(self, idx: torch.Tensor):
+        """Run the prompt once. Returns (logits for the next token, per-layer key/value cache)."""
+        T = idx.size(1)
+        if T > self.cfg.block_size:
+            raise ValueError(f"sequence length {T} exceeds block_size {self.cfg.block_size}")
+        x = self.tok_emb(idx) + self.pos_emb(torch.arange(T, device=idx.device))
+        caches = []
+        for block in self.blocks:
+            x, kv = block.forward_cached(x)
+            caches.append(kv)
+        return self.head(self.ln_f(x))[:, -1, :], caches
+
+    @torch.no_grad()
+    def step(self, token: torch.Tensor, caches):
+        """Feed one new token (shape (B, 1)) using the cache. Returns (logits, updated cache)."""
+        pos = caches[0][0].size(2)
+        if pos >= self.cfg.block_size:
+            raise ValueError("context is full")
+        x = self.tok_emb(token) + self.pos_emb(torch.tensor([pos], device=token.device))
+        new = []
+        for block, past in zip(self.blocks, caches):
+            x, kv = block.forward_cached(x, past)
+            new.append(kv)
+        return self.head(self.ln_f(x))[:, -1, :], new
 
     @torch.no_grad()
     def generate(

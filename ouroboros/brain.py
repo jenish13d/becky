@@ -229,6 +229,31 @@ class OwnLLM:
 
     @torch.no_grad()
     def complete(self, prompt: str) -> str:
+        """Greedy decoding with a key/value cache: each byte costs one token of work, not the
+        whole context again. Gives exactly the same answer as :meth:`complete_naive`."""
+        device = next(self.model.parameters()).device
+        ids = encode(prompt)
+        room = self.model.cfg.block_size
+        out: list[int] = []
+        logits, caches = self.model.prefill(torch.tensor([ids[-room:]], dtype=torch.long, device=device))
+        for _ in range(self.max_new):
+            nxt = int(logits[0].argmax())
+            if nxt == 10:
+                break
+            out.append(nxt)
+            if min(len(ids), room) + len(out) > room:  # context full: slide the window, as before
+                caches = None
+            if caches is not None:
+                logits, caches = self.model.step(torch.tensor([[nxt]], dtype=torch.long, device=device), caches)
+            else:
+                ctx = torch.tensor([(ids + out)[-room:]], dtype=torch.long, device=device)
+                logits = self.model(ctx)[0][:, -1, :]
+        return decode(out)
+
+    @torch.no_grad()
+    def complete_naive(self, prompt: str) -> str:
+        """The original loop that re-reads the whole context for every byte. Kept to prove the
+        cached version is identical, and to measure how much faster it is."""
         device = next(self.model.parameters()).device
         ids = encode(prompt)
         room = self.model.cfg.block_size
@@ -260,6 +285,10 @@ def load_brain(path: Path = DEFAULT_BRAIN) -> OwnLLM:
     if not path.exists():
         raise FileNotFoundError(f"no trained brain at {path}. Train one with:  python -m ouroboros brain-train")
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
+    from .compress import is_compressed, model_from_compressed
+
+    if is_compressed(ckpt):  # an int8 file made by `compress`
+        return OwnLLM(model_from_compressed(ckpt))
     model = GPT(GPTConfig(**ckpt["model_config"]))
     model.load_state_dict(ckpt["state_dict"])
     return OwnLLM(model)

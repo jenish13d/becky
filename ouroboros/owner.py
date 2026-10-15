@@ -217,3 +217,18 @@ def reset_constitution(owner_dir: Path, passphrase: str) -> None:
 
     priv = _load_private(owner_dir, passphrase)
     _sign_and_write(owner_dir, priv, Path(DEFAULT_CONSTITUTION).read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------- signing arbitrary data
+def sign_bytes(owner_dir: Path, passphrase: str, data: bytes) -> str:
+    """Sign ``data`` with the owner key (needs the passphrase). Returns a base64 signature."""
+    return _b64(_load_private(owner_dir, passphrase).sign(data))
+
+
+def verify_signature(owner_dir: Path, data: bytes, signature_b64: str) -> bool:
+    try:
+        pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(_paths(owner_dir)["public"].read_text()))
+        pub.verify(base64.b64decode(signature_b64), data)
+        return True
+    except (InvalidSignature, OSError, ValueError):
+        return False

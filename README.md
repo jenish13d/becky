@@ -16,7 +16,7 @@ It runs on a laptop CPU in minutes, and every decision it makes is written to di
 | `ouroboros/evolve.py` | The self-improvement loop: `Genome` (design + training recipe), `Designer` (the policy that proposes successors), budgets, promotion, lineage log. |
 | `ouroboros/selfedit.py` + `organism.py` | **Permission-gated self-improving *code*:** a program that reads its own source, proposes an upgrade to a bounded region of itself, proves it on a held-out task, and rewrites itself only after a human approves the diff. |
 | `ouroboros/guardian.py` + `agent.py` | **Becky**: a local agent whose moral code (`constitution.toml`) is enforced by a guardian outside the model. |
-| `tests/` | 196 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
+| `tests/` | 225 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
 
 ## How one generation works
 
@@ -145,6 +145,20 @@ Any real improvement returns to the cheapest tactic. It stops only when every ta
 Guard rails: a candidate must beat the champion by a margin larger than the measurement noise; must not get worse on the everyday-request check; and must not slip on the core phrasings (see below). The improved brain is saved as a proposal; it replaces hers only through `--apply`, which shows the scores and asks, and refuses outright if it isn't better.
 
 **A real run, and what it taught.** From a start of 75.0%, the loop got stuck on `fresh` and `failures`, switched to `diversify`, and that produced the jump (82.0% to 86.5%), reaching 86.5% overall. Checking the result independently on 200 new examples showed the trade-off the loop hadn't seen: unseen phrasings rose from 63.5% to 77.5%, but writes with the standard phrasings fell from 97% to 86%. The loop's rules had allowed that, so the rule was fixed: a candidate is now blocked if it regresses on the core phrasings, however much it gains elsewhere. That run's candidate was **not** adopted; the shipped brain is unchanged. The fixed loop hasn't been re-run for a full hour-long pass yet, so treat further gains as unproven until you run it.
+
+## Making her smaller, faster, safer to trust
+
+Four tools, all measured on the real brain, none of which changes anything unasked.
+
+| Tool | What it does | Measured |
+| --- | --- | --- |
+| **Cached decoding** (built in) | Keeps the attention state so each new byte costs one token of work instead of re-reading the whole context. Same answers, proven by test. | **2.2-2.3x faster** per byte; identical output on every test prompt |
+| **`compress`** | Stores the big weight matrices as int8 plus a scale per row. | **2.64 MB -> 1.02 MB (2.6x smaller)**, accuracy 99% -> 99% |
+| **`review`** | She inspects her own layers: where the parameters are, where the time goes, and what happens to her accuracy if each layer is removed. Suggestions only. | Every layer matters (removing any one drops accuracy to ~0%), so pruning would hurt |
+| **`memory-search` / `memory-dedupe`** | Her notes are searchable and a repeated note is not stored twice (the audit log records the skip). | `buy milk` ~ `Buy MILK!`; `dentist` finds the dentist note |
+| **`anchor` / `verify-anchor`** | Fingerprints her brain, rules and code and signs the list with your passphrase. She refuses to start if anything differs, and names what changed. | Detects edited, swapped, deleted and added files, and a forged manifest |
+
+Honest limits. `compress` saves **storage, not RAM or speed**: the weights expand to floats when loaded. Memory matching is fuzzy text similarity, not understanding of meaning (`purchase dairy` will not find `buy milk`). The anchor catches accidental damage and casual tampering; it cannot protect against someone who controls your whole account and can replace the checker too. After a change you meant to make (a `git pull`, an adopted brain) you review it and run `anchor` again.
 
 ## Neuromorphic: a spiking neural network
 

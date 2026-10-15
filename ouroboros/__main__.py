@@ -82,6 +82,18 @@ def cmd_selfedit(a: argparse.Namespace) -> None:
     print("applied — the organism rewrote itself." if applied else "left unchanged.")
 
 
+def _require_anchor(owner_dir: Path) -> None:
+    """Refuse to run if the owner's integrity anchor says something was changed."""
+    from .anchor import verify_anchor
+
+    report = verify_anchor(owner_dir)
+    if not report.present:
+        print("note: no integrity anchor yet. `python -m ouroboros anchor` protects her brain, rules and code.")
+    elif not report.ok:
+        raise SystemExit(f"Refusing to start: {report.describe()}\n"
+                         "If you made these changes, review them and run:  python -m ouroboros anchor")
+
+
 def _brain(a: argparse.Namespace):
     """Becky's model: her own trained brain by default; Ollama only if you ask for it."""
     if a.brain == "ollama":
@@ -146,6 +158,66 @@ def cmd_brain_improve(a: argparse.Namespace) -> None:
     print("adopted." if done else "left unchanged.")
 
 
+def cmd_memory_search(a: argparse.Namespace) -> None:
+    from .memory import Memory
+
+    hits = Memory(Path(a.workspace) / "memory.md").search(a.query, k=a.k)
+    if not hits:
+        print("nothing relevant in memory")
+    for score, note in hits:
+        print(f"{score:.2f}  {note}")
+
+
+def cmd_memory_dedupe(a: argparse.Namespace) -> None:
+    from .memory import Memory
+
+    removed = Memory(Path(a.workspace) / "memory.md").dedupe()
+    print(f"removed {len(removed)} repeated note(s)" + ("".join(f"\n  - {n}" for n in removed) if removed else ""))
+
+
+def cmd_anchor(a: argparse.Namespace) -> None:
+    import getpass
+
+    from .anchor import create_anchor
+    from .owner import OwnerError, is_initialised
+
+    if not is_initialised(Path(a.owner_dir)):
+        raise SystemExit("No owner passphrase is set up yet. Run:  python -m ouroboros init-owner")
+    try:
+        manifest = create_anchor(Path(a.owner_dir), getpass.getpass("Owner passphrase: "))
+    except OwnerError as exc:
+        raise SystemExit(f"Refused: {exc}")
+    print(f"anchored {len(manifest['files'])} files (code, rules, brain) in {a.owner_dir}")
+
+
+def cmd_verify_anchor(a: argparse.Namespace) -> None:
+    from .anchor import verify_anchor
+
+    report = verify_anchor(Path(a.owner_dir))
+    print(report.describe())
+    raise SystemExit(0 if (report.ok or not report.present) else 1)
+
+
+def cmd_compress(a: argparse.Namespace) -> None:
+    from .brain import DEFAULT_BRAIN, load_brain
+    from .compress import compress_report
+
+    src = Path(a.path) if a.path else DEFAULT_BRAIN
+    r = compress_report(load_brain(src).model, Path(a.out), source=src, eval_n=a.eval_n)
+    print(f"size: {r['size_before_bytes']:,} -> {r['size_after_bytes']:,} bytes  (x{r['ratio']:.1f} smaller)")
+    print(f"accuracy on {a.eval_n} fresh examples: {r['accuracy_before']:.1%} -> {r['accuracy_after']:.1%}")
+    print(f"largest weight rounding error: {r['max_weight_error']:.4f}")
+    print(("Safe to use: " if r["safe"] else "NOT safe, accuracy dropped too much: ") + f"{a.out}")
+    print("Use it with:  python -m ouroboros becky \"...\" --brain-path " + str(a.out))
+
+
+def cmd_review(a: argparse.Namespace) -> None:
+    from .brain import DEFAULT_BRAIN, load_brain
+    from .review import render, review
+
+    print(render(review(load_brain(Path(a.path) if a.path else DEFAULT_BRAIN).model, eval_n=a.eval_n)))
+
+
 def cmd_brain_eval(a: argparse.Namespace) -> None:
     from .brain import DEFAULT_BRAIN, load_brain
 
@@ -174,6 +246,8 @@ def cmd_becky(a: argparse.Namespace) -> None:
     if not is_initialised(owner_dir) and not a.unsigned:
         raise SystemExit("No owner passphrase is set up yet. Run:  python -m ouroboros init-owner\n"
                          "(or pass --unsigned to run with unsigned rules)")
+    if not a.unsigned:
+        _require_anchor(owner_dir)
     audit = AuditLog(Path(a.audit))
     reviewer = ClaudeReviewer() if a.claude_review else None
     try:
@@ -250,6 +324,7 @@ def cmd_hub(a: argparse.Namespace) -> None:
     owner_dir = Path(a.owner_dir)
     if not is_initialised(owner_dir):
         raise SystemExit("No owner passphrase is set up yet. Run:  python -m ouroboros init-owner")
+    _require_anchor(owner_dir)
     tasks_file = Path(a.tasks) if a.tasks else owner_dir / "tasks.json"
     try:
         tasks = load_tasks(tasks_file)
@@ -417,6 +492,35 @@ def main() -> None:
     bi.add_argument("--out", default="runs/brain-improve")
     bi.add_argument("--apply", action="store_true", help="afterwards, ask whether to adopt the improved brain")
     bi.set_defaults(fn=cmd_brain_improve)
+
+    ms = sub.add_parser("memory-search", help="find the notes most relevant to a query")
+    ms.add_argument("query")
+    ms.add_argument("-k", type=int, default=5)
+    ms.add_argument("--workspace", default="becky_workspace")
+    ms.set_defaults(fn=cmd_memory_search)
+
+    md = sub.add_parser("memory-dedupe", help="remove repeated notes from memory.md")
+    md.add_argument("--workspace", default="becky_workspace")
+    md.set_defaults(fn=cmd_memory_dedupe)
+
+    an = sub.add_parser("anchor", help="fingerprint and sign her brain, rules and code (needs your passphrase)")
+    an.add_argument("--owner-dir", default=str(home))
+    an.set_defaults(fn=cmd_anchor)
+
+    va = sub.add_parser("verify-anchor", help="check that nothing changed since you anchored it")
+    va.add_argument("--owner-dir", default=str(home))
+    va.set_defaults(fn=cmd_verify_anchor)
+
+    co = sub.add_parser("compress", help="shrink her brain to int8 and measure the cost")
+    co.add_argument("--path", default=None)
+    co.add_argument("--out", default="brain-int8.pt")
+    co.add_argument("--eval-n", type=int, default=100)
+    co.set_defaults(fn=cmd_compress)
+
+    rv = sub.add_parser("review", help="Becky reviews her own layers, speed and size (changes nothing)")
+    rv.add_argument("--path", default=None)
+    rv.add_argument("--eval-n", type=int, default=40)
+    rv.set_defaults(fn=cmd_review)
 
     be = sub.add_parser("brain-eval", help="score Becky's brain on fresh examples")
     be.add_argument("--path", default=None)

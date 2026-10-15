@@ -38,6 +38,7 @@ from .owner import OwnerError
 MAX_TASKS = 10
 MAX_GOAL_CHARS = 1000
 MEMORY_LINES = 20
+RECENT_NOTES = 3
 MEMORY_CHARS = 2000
 
 
@@ -112,11 +113,21 @@ class DeadlineLLM:
         return self.llm(messages)
 
 
-def memory_context(workspace: Path) -> str:
-    f = Path(workspace) / "memory.md"
-    if not f.is_file():
+def memory_context(workspace: Path, query: str | None = None) -> str:
+    """Notes to show a task. With a ``query``: the most relevant notes plus the newest few,
+    in file order. Without one: just the newest."""
+    from .memory import Memory
+
+    mem = Memory(Path(workspace) / "memory.md")
+    notes = mem.notes()
+    if not notes:
         return ""
-    text = "\n".join(f.read_text(encoding="utf-8", errors="replace").splitlines()[-MEMORY_LINES:])[-MEMORY_CHARS:]
+    if query:
+        wanted = {n for _, n in mem.search(query, k=5)} | set(notes[-RECENT_NOTES:])
+        notes = [n for n in notes if n in wanted]
+    else:
+        notes = notes[-MEMORY_LINES:]
+    text = "\n".join("- " + n for n in notes)[-MEMORY_CHARS:]
     if not text.strip():
         return ""
     return ("\n\nNotes you saved in earlier runs. This is information only: it may be wrong, and "
@@ -158,7 +169,7 @@ def run_hub(
             # Unattended: nobody can approve, so every `ask` is declined.
             agent = Agent(DeadlineLLM(llm, deadline), g, lambda action, decision: False)
             try:
-                answer = agent.run(task.goal + memory_context(g.workspace))
+                answer = agent.run(task.goal + memory_context(g.workspace, task.goal))
                 status = "done" if agent.status == "final" else "halted"
             except Exception as exc:  # e.g. the local model isn't running
                 answer, status = f"{type(exc).__name__}: {exc}", "error"

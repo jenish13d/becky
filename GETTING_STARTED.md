@@ -192,7 +192,43 @@ candidate is not better. Check the score for yourself any time with
 
 ---
 
-## Part 6: The other pieces
+## Part 6: Make her smaller, faster, and tamper-proof
+
+**Step 18. Shrink her brain** (about 2.6x smaller, same accuracy):
+```
+python -m ouroboros compress --out brain-int8.pt
+```
+It prints the size and accuracy before and after, and says `Safe to use` or `NOT safe`. To run her
+from the small file: `python -m ouroboros becky "list the files" --brain-path brain-int8.pt`.
+This saves disk space only; it does not use less memory.
+
+**Step 19. Let her review herself** (changes nothing):
+```
+python -m ouroboros review
+```
+It shows where her parameters are, how fast she runs, and what each layer is worth. Any
+suggestion is yours to act on.
+
+**Step 20. Search her memory and remove repeats:**
+```
+python -m ouroboros memory-search "dentist"
+python -m ouroboros memory-dedupe
+```
+This is fuzzy text matching, not understanding: `buy milk` finds `Buy milk!` but not `purchase dairy`.
+
+**Step 21. Lock her down with an integrity anchor** (needs your passphrase):
+```
+python -m ouroboros anchor
+python -m ouroboros verify-anchor
+```
+`anchor` records fingerprints of her brain, rules and code and signs them. From then on she
+refuses to start if anything changed, and names the file. **After you update on purpose**
+(`git pull`, or adopting an improved brain in Step 17) she will refuse until you look at what
+changed and run `python -m ouroboros anchor` again. That is how it is meant to work.
+
+---
+
+## Part 7: The other pieces
 
 **What "rewrite" and "apply" mean in `selfedit`.**
 ```
@@ -229,6 +265,7 @@ python -m ouroboros sample --ckpt runs\evo\champion.pt --prompt "ROMEO:" --token
 | `'python' is not recognized` | Reinstall Python and tick "Add python.exe to PATH", or use `py` instead of `python`. |
 | `'git' is not recognized` | Install Git from git-scm.com, then open a new Command Prompt. |
 | `No owner passphrase is set up yet` | Run Step 7. |
+| `integrity check FAILED` | Something she is built from changed. If you meant that, run Step 21's `anchor` again. If not, restore the file (`git checkout -- <file>`). |
 | `Refusing to start: ... not signed by the owner` | Her rules file was edited by hand. Run `python -m ouroboros amend --reset` with your passphrase. |
 | `kill switch engaged` | Delete `%USERPROFILE%\.becky-stop` (Step 11). |
 | `no trained brain` | Run `git pull`, or train one: `python -m ouroboros brain-train`. |

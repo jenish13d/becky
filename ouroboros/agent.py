@@ -46,8 +46,12 @@ def _remember(g: Guardian, args: dict) -> str:
     note = args.get("note")
     if not isinstance(note, str) or not note.strip():
         raise ValueError("note must be non-empty text")
-    with g.safe_path("memory.md").open("a", encoding="utf-8") as f:
-        f.write("- " + note.strip()[:MAX_NOTE_CHARS].replace("\n", " ") + "\n")
+    from .memory import Memory
+
+    stored, duplicate_of = Memory(g.safe_path("memory.md")).add(note.strip()[:MAX_NOTE_CHARS])
+    # The answer stays "noted" either way (it is true: she has the note). The audit log records
+    # whether a new line was written or the note repeated an existing one.
+    g.audit.append(kind="memory", stored=stored, duplicate_of=(duplicate_of or "")[:120])
     return "noted"
 
 
