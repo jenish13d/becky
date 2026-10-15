@@ -16,7 +16,7 @@ It runs on a laptop CPU in minutes, and every decision it makes is written to di
 | `ouroboros/evolve.py` | The self-improvement loop: `Genome` (design + training recipe), `Designer` (the policy that proposes successors), budgets, promotion, lineage log. |
 | `ouroboros/selfedit.py` + `organism.py` | **Permission-gated self-improving *code*:** a program that reads its own source, proposes an upgrade to a bounded region of itself, proves it on a held-out task, and rewrites itself only after a human approves the diff. |
 | `ouroboros/guardian.py` + `agent.py` | **Becky**: a local agent whose moral code (`constitution.toml`) is enforced by a guardian outside the model. |
-| `tests/` | 236 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
+| `tests/` | 268 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
 
 ## How one generation works
 
@@ -133,6 +133,10 @@ Bounds: at most 10 tasks, each limited by the guardian's step budget, all of the
 **Limits, stated plainly.** This governs the tools Becky is given; it cannot make a model "good". A hash chain reveals tampering but can't stop someone with full disk access from rewriting the whole log. A bug in `guardian.py` is a hole. It is a seatbelt, not a conscience.
 
 The confinement and the tool set live in the code, so editing the constitution can change *how much she asks you*, but cannot grant her a shell or let her out of her workspace.
+
+## Becky online
+
+`python -m ouroboros serve` (or double-click `serve.bat`) puts her behind a web page with a secret token. It listens only on your own PC unless you choose otherwise, locks out repeated wrong tokens, refuses oversized or malformed requests, blocks foreign Host headers, and runs every request through the same guardian. Because nobody is there to approve, online she can read and list but not write. She has no internet access herself. For phone and public access (Tailscale, or an HTTPS tunnel) see [GETTING_STARTED.md](GETTING_STARTED.md) Part 7. The page has no HTTPS of its own, so never send the token over an open network without Tailscale or a tunnel.
 
 ## Keep improving, and when stuck, change approach
 

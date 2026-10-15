@@ -1,0 +1,11 @@
+Becky setup check  (Python 3.13.16 on Linux-6.18.44-fc-v114-x86_64-with-glibc2.39)
+
+  [OK] Python 3.11 or newer: 3.13.16
+  [OK] torch is installed: 2.14.1+cpu
+  [OK] cryptography is installed: 50.0.1
+  [OK] scrypt (for your passphrase): available
+  [OK] her brain file is present: 2,637,583 bytes
+  [OK] Becky's code loads: ok
+  [OK] can write to /tmp/pytest-of-root/pytest-44/test_the_full_report_lists_pas0/.becky: yes
+
+Everything is ready.

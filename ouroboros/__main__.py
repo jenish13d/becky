@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -258,6 +259,54 @@ def cmd_chat(a: argparse.Namespace) -> None:
 
     print(f"workspace: {workspace.resolve()}   audit log: {audit.path}\nkill switch: create {Path.home() / '.becky-stop'}\n")
     Chat(run_request, print, input, improve, do_review, do_compress, search).loop()
+
+
+def cmd_serve(a: argparse.Namespace) -> None:
+    import os
+    import secrets
+
+    from .agent import Agent
+    from .brain import DEFAULT_BRAIN, load_brain
+    from .guardian import DEFAULT_CONSTITUTION, AuditLog, Guardian
+    from .owner import OwnerError, is_initialised
+    from .web import LOOPBACK, MIN_TOKEN, make_server
+
+    owner_dir, workspace = Path(a.owner_dir), Path(a.workspace)
+    if not is_initialised(owner_dir):
+        raise SystemExit("No owner passphrase is set up yet. Run start.bat once (or: python -m ouroboros init-owner).")
+    _require_anchor(owner_dir)
+    if not workspace.exists():
+        workspace.mkdir(parents=True)
+        (workspace / "notes.txt").write_text("welcome to becky\n", encoding="utf-8")
+    token = os.environ.get("BECKY_WEB_TOKEN") or secrets.token_urlsafe(24)
+    if len(token) < MIN_TOKEN:
+        raise SystemExit(f"BECKY_WEB_TOKEN must be at least {MIN_TOKEN} characters.")
+    audit, brain = AuditLog(Path(a.audit)), load_brain(DEFAULT_BRAIN)
+
+    def run_request(goal: str) -> str:
+        try:
+            g = Guardian(DEFAULT_CONSTITUTION, workspace, audit, owner_dir=owner_dir)
+        except OwnerError as exc:
+            return f"Refusing to run: {exc}"
+        # Nobody is at the keyboard to approve anything, so everything that would ask is declined.
+        return Agent(brain, g, lambda action, decision: False).run(goal)
+
+    server = make_server(a.host, a.port, token, run_request, tuple(a.allowed_host or ()))
+    shown = "127.0.0.1" if a.host in ("0.0.0.0", "") else a.host
+    print(f"Becky is online at http://{shown}:{a.port}")
+    print(f"Access token (paste it into the page; it is not saved anywhere): {token}" if "BECKY_WEB_TOKEN" not in os.environ
+          else "Access token: the one you set in BECKY_WEB_TOKEN")
+    if a.host not in LOOPBACK:
+        print("\nWARNING: this is reachable from other devices. Plain HTTP can be read by anyone on the "
+              "network, so use it only over a private network such as Tailscale, or an HTTPS tunnel.")
+    print("Reading and listing work; writing is declined (nobody is here to approve it).")
+    print(f"Kill switch: create {Path.home() / '.becky-stop'}    Stop the server: press Ctrl+C\n")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        server.server_close()
 
 
 def cmd_anchor(a: argparse.Namespace) -> None:
@@ -595,6 +644,15 @@ def main() -> None:
     ch.add_argument("--runs", default="runs")
     ch.set_defaults(fn=cmd_chat)
 
+    sv = sub.add_parser("serve", help="put Becky online behind an access token")
+    sv.add_argument("--host", default="127.0.0.1", help="127.0.0.1 = this PC only (default); 0.0.0.0 = other devices")
+    sv.add_argument("--port", type=int, default=8080)
+    sv.add_argument("--allowed-host", action="append", help="extra hostname to accept (for tunnels)")
+    sv.add_argument("--workspace", default="becky_workspace")
+    sv.add_argument("--audit", default=str(home / "audit.jsonl"))
+    sv.add_argument("--owner-dir", default=str(home))
+    sv.set_defaults(fn=cmd_serve)
+
     an = sub.add_parser("anchor", help="fingerprint and sign her brain, rules and code (needs your passphrase)")
     an.add_argument("--owner-dir", default=str(home))
     an.set_defaults(fn=cmd_anchor)
@@ -629,7 +687,25 @@ def main() -> None:
     au.set_defaults(fn=cmd_audit)
 
     a = p.parse_args()
-    a.fn(a)
+    try:
+        a.fn(a)
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except Exception:
+        # Save the details where they can be sent, instead of leaving a window that vanishes.
+        import platform
+        import traceback
+
+        report = Path.home() / ".becky" / "last-error.txt"
+        try:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(f"Python {platform.python_version()} on {platform.platform()}\n"
+                              f"command: {' '.join(sys.argv)}\n\n{traceback.format_exc()}", encoding="utf-8")
+            where = f"Details saved to {report}: send me that file."
+        except OSError:
+            where = "Could not save the details; copy the text above."
+        print(f"\nBecky hit an unexpected error: {sys.exc_info()[0].__name__}: {sys.exc_info()[1]}\n{where}")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

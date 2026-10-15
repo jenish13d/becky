@@ -23,6 +23,22 @@ you> quit
 and asks whether to keep it. She never swaps her own brain without your yes, and your old
 brain is kept as `ouroboros\brain.previous.pt`.
 
+**If a window opens and vanishes, or something does not work:**
+
+1. Open the unzipped `becky` folder in File Explorer.
+2. Click the **address bar** at the top (where the folder path is), type `cmd` and press **Enter**.
+   A black Command Prompt opens **inside that folder**, and it stays open.
+3. Type `python check_setup.py` and press Enter. It lists every requirement as `[OK]` or
+   `[FAIL]` with the fix next to each one. It also saves `check-report.txt` in the folder.
+4. To see Becky's own error messages, type `start.bat` in that same window. If she crashes, the
+   details are saved to `C:\Users\<you>\.becky\last-error.txt`.
+
+Send me `check-report.txt` (and `last-error.txt` if it exists) and I can see exactly what happened.
+
+Note that after `setup.bat` finishes, "Press any key to continue" followed by the window closing
+is **normal**. What matters is the text just above it: it should say *Setup finished*, or
+`[FAIL]` lines if something went wrong.
+
 Everything below is the long version with every individual command, in case you want it.
 
 ---
@@ -257,7 +273,62 @@ changed and run `python -m ouroboros anchor` again. That is how it is meant to w
 
 ---
 
-## Part 7: The other pieces
+## Part 7: Put Becky online (use her from your phone or anywhere)
+
+Becky online is a small web page protected by a secret token. **While she is online she can list and
+read files but not write them** (nobody is there to press "allow"), and she has no access to the
+internet herself; the page only lets *you* talk to *her*. Pick how far you want to take it:
+
+### Level 1: in your browser on this PC (start here)
+
+1. Double-click **`serve.bat`**.
+2. It prints `Becky is online at http://127.0.0.1:8080` and an **Access token**. Copy the token.
+3. Open that address in your browser, paste the token into the top box, and type a request
+   (`list the files`, `read notes.txt`). The token is not saved anywhere; a new one is made each time.
+4. Press **Ctrl+C** in the black window to take her offline.
+
+### Level 2: from your phone, privately and encrypted (recommended for "anywhere")
+
+This uses **Tailscale**, a free private network between your own devices, so nothing is open to the public.
+
+1. Make a free account at tailscale.com. Install Tailscale on your **PC** and on your **phone**, and sign
+   in to the **same account** on both.
+2. On the PC, open Command Prompt and type `tailscale ip -4`. It prints an address like `100.101.102.103`.
+3. In the `becky` folder, run (using your address):
+   ```
+   python -m ouroboros serve --host 100.101.102.103
+   ```
+   If Windows asks about the firewall, allow **Private networks**.
+4. On your phone (Tailscale switched on), open `http://100.101.102.103:8080` and paste the token.
+5. It works from any network, home or mobile data, as long as the PC is on and the window is open.
+
+### Level 3: a public web address (only if you really need it)
+
+Anyone on the internet could then find the login page, so be strict:
+
+1. Choose your own long token before starting (20+ random characters):
+   `set BECKY_WEB_TOKEN=put-a-long-random-phrase-here`
+2. Start Becky: `python -m ouroboros serve`
+3. Install **cloudflared** (Cloudflare's free tunnel; search "cloudflared install"). In a **second**
+   Command Prompt run: `cloudflared tunnel --url http://127.0.0.1:8080`
+   It prints an `https://something.trycloudflare.com` address.
+4. Stop Becky (Ctrl+C) and restart her allowing that name:
+   `python -m ouroboros serve --allowed-host something.trycloudflare.com`
+5. Open the `https://` address from anywhere and paste your token.
+
+Wrong guesses are limited: five wrong tokens lock the address out for a minute (through a tunnel that
+lock is shared, so someone guessing will also briefly lock you out; that is the price of stopping
+brute-forcing). I could not test Tailscale or cloudflared from here, so if a step differs from what you
+see, follow their own setup pages for that one step and tell me where it differs.
+
+**Never** put Becky on `--host 0.0.0.0` over café or hotel Wi-Fi without Tailscale: the page is plain
+HTTP, so the token could be read by others on that network.
+
+To stop her being reachable: close the window, or create the kill switch file (Step 11).
+
+---
+
+## Part 8: The other pieces
 
 **What "rewrite" and "apply" mean in `selfedit`.**
 ```
