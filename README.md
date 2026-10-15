@@ -16,7 +16,7 @@ It runs on a laptop CPU in minutes, and every decision it makes is written to di
 | `ouroboros/evolve.py` | The self-improvement loop: `Genome` (design + training recipe), `Designer` (the policy that proposes successors), budgets, promotion, lineage log. |
 | `ouroboros/selfedit.py` + `organism.py` | **Permission-gated self-improving *code*:** a program that reads its own source, proposes an upgrade to a bounded region of itself, proves it on a held-out task, and rewrites itself only after a human approves the diff. |
 | `ouroboros/guardian.py` + `agent.py` | **Becky**: a local agent whose moral code (`constitution.toml`) is enforced by a guardian outside the model. |
-| `tests/` | 104 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
+| `tests/` | 112 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
 
 ## How one generation works
 
