@@ -13,7 +13,7 @@ dynamic = ["dependencies"]
 packages = ["ouroboros"]
 
 [tool.setuptools.package-data]
-ouroboros = ["*.toml"]
+ouroboros = ["*.toml", "*.pt"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

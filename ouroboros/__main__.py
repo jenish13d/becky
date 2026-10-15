@@ -82,8 +82,59 @@ def cmd_selfedit(a: argparse.Namespace) -> None:
     print("applied — the organism rewrote itself." if applied else "left unchanged.")
 
 
+def _brain(a: argparse.Namespace):
+    """Becky's model: her own trained brain by default; Ollama only if you ask for it."""
+    if a.brain == "ollama":
+        from .agent import OllamaLLM
+
+        return OllamaLLM(a.model)
+    from .brain import DEFAULT_BRAIN, load_brain
+
+    try:
+        return load_brain(Path(a.brain_path) if a.brain_path else DEFAULT_BRAIN)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc))
+
+
+def cmd_brain_train(a: argparse.Namespace) -> None:
+    from .brain import DEFAULT_BRAIN, OwnLLM, save_brain, train_brain
+
+    model = train_brain(steps=a.steps, n_examples=a.examples, seed=a.seed, log=print)
+    out = save_brain(model, Path(a.out) if a.out else DEFAULT_BRAIN, meta={"steps": a.steps, "seed": a.seed})
+    print(f"\nsaved {out}")
+    _print_brain_scores(OwnLLM(model))
+
+
+def _print_brain_scores(brain) -> None:
+    from .brain import evaluate_brain
+
+    seen = evaluate_brain(brain, n=150)
+    held = evaluate_brain(brain, n=100, held_out=True)
+    print(f"exact-match on new words, trained phrasings : {seen['overall']:.1%}  {seen['by_kind']}")
+    print(f"exact-match on new words, unseen phrasings  : {held['overall']:.1%}  {held['by_kind']}")
+
+
+def cmd_brain_eval(a: argparse.Namespace) -> None:
+    from .brain import DEFAULT_BRAIN, load_brain
+
+    _print_brain_scores(load_brain(Path(a.path) if a.path else DEFAULT_BRAIN))
+
+
+def cmd_task_add(a: argparse.Namespace) -> None:
+    import json
+
+    f = Path(a.owner_dir) / "tasks.json"
+    tasks = json.loads(f.read_text(encoding="utf-8")) if f.exists() else []
+    if any(t.get("id") == a.id for t in tasks):
+        raise SystemExit(f"a task with id {a.id!r} already exists in {f}")
+    tasks.append({"id": a.id, "goal": a.goal})
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+    print(f"added task {a.id!r}; {len(tasks)} task(s) in {f}")
+
+
 def cmd_becky(a: argparse.Namespace) -> None:
-    from .agent import Agent, OllamaLLM
+    from .agent import Agent
     from .guardian import DEFAULT_CONSTITUTION, AuditLog, ClaudeReviewer, Guardian
     from .owner import DEFAULT_OWNER_DIR, OwnerError, is_initialised
 
@@ -106,7 +157,7 @@ def cmd_becky(a: argparse.Namespace) -> None:
         return input("Allow this? [y/N] ").strip().lower() in ("y", "yes")
 
     print(f"workspace: {g.workspace}\naudit log: {audit.path}\nkill switch: create {g.stop_file}")
-    print("\n" + Agent(OllamaLLM(a.model), g, confirm).run(a.goal))
+    print("\n" + Agent(_brain(a), g, confirm).run(a.goal))
 
 
 def cmd_init_owner(a: argparse.Namespace) -> None:
@@ -157,7 +208,6 @@ def cmd_amend(a: argparse.Namespace) -> None:
 def cmd_hub(a: argparse.Namespace) -> None:
     import sys
 
-    from .agent import OllamaLLM
     from .guardian import DEFAULT_CONSTITUTION, AuditLog, Guardian
     from .hub import HubBusy, load_tasks, run_hub, schedule_help
     from .owner import is_initialised
@@ -180,7 +230,7 @@ def cmd_hub(a: argparse.Namespace) -> None:
         return Guardian(DEFAULT_CONSTITUTION, ws, audit, owner_dir=owner_dir)
 
     try:
-        report = run_hub(tasks, make_guardian, OllamaLLM(a.model), Path(a.audit), owner_dir / "reports",
+        report = run_hub(tasks, make_guardian, _brain(a), Path(a.audit), owner_dir / "reports",
                          owner_dir / "hub.lock", deadline_s=a.deadline_minutes * 60)
     except HubBusy as exc:
         raise SystemExit(str(exc))
@@ -274,7 +324,10 @@ def main() -> None:
     b.add_argument("goal")
     b.add_argument("--workspace", default="becky_workspace")
     b.add_argument("--audit", default=str(home / "audit.jsonl"))
-    b.add_argument("--model", default="llama3.2", help="a model served by local Ollama")
+    b.add_argument("--brain", choices=["own", "ollama"], default="own",
+                   help="own = the model trained here (default); ollama = an outside model, only if you ask")
+    b.add_argument("--brain-path", default=None)
+    b.add_argument("--model", default="llama3.2", help="only used with --brain ollama")
     b.add_argument("--owner-dir", default=str(home))
     b.add_argument("--unsigned", action="store_true", help="run without owner-signed rules")
     b.add_argument("--claude-review", action="store_true",
@@ -298,7 +351,9 @@ def main() -> None:
     hb.add_argument("--workspace", default="becky_workspace")
     hb.add_argument("--audit", default=str(home / "audit.jsonl"))
     hb.add_argument("--owner-dir", default=str(home))
-    hb.add_argument("--model", default="llama3.2")
+    hb.add_argument("--brain", choices=["own", "ollama"], default="own")
+    hb.add_argument("--brain-path", default=None)
+    hb.add_argument("--model", default="llama3.2", help="only used with --brain ollama")
     hb.add_argument("--deadline-minutes", type=float, default=30.0)
     hb.add_argument("--print-schedule", action="store_true", help="print how to schedule it, then exit")
     hb.set_defaults(fn=cmd_hub)
@@ -308,6 +363,23 @@ def main() -> None:
     sn.add_argument("--epochs", type=int, default=25)
     sn.add_argument("--hidden", type=int, default=64)
     sn.set_defaults(fn=cmd_snn)
+
+    bt = sub.add_parser("brain-train", help="train Becky's own brain from scratch (replaces ouroboros/brain.pt)")
+    bt.add_argument("--steps", type=int, default=3000)
+    bt.add_argument("--examples", type=int, default=24000)
+    bt.add_argument("--seed", type=int, default=0)
+    bt.add_argument("--out", default=None)
+    bt.set_defaults(fn=cmd_brain_train)
+
+    be = sub.add_parser("brain-eval", help="score Becky's brain on fresh examples")
+    be.add_argument("--path", default=None)
+    be.set_defaults(fn=cmd_brain_eval)
+
+    ta = sub.add_parser("task-add", help="add a task to the hub's task list")
+    ta.add_argument("id")
+    ta.add_argument("goal")
+    ta.add_argument("--owner-dir", default=str(home))
+    ta.set_defaults(fn=cmd_task_add)
 
     au = sub.add_parser("audit", help="verify the audit log's hash chain")
     au.add_argument("--log", default=str(home / "audit.jsonl"))
