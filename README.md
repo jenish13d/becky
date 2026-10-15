@@ -16,7 +16,7 @@ It runs on a laptop CPU in minutes, and every decision it makes is written to di
 | `ouroboros/evolve.py` | The self-improvement loop: `Genome` (design + training recipe), `Designer` (the policy that proposes successors), budgets, promotion, lineage log. |
 | `ouroboros/selfedit.py` + `organism.py` | **Permission-gated self-improving *code*:** a program that reads its own source, proposes an upgrade to a bounded region of itself, proves it on a held-out task, and rewrites itself only after a human approves the diff. |
 | `ouroboros/guardian.py` + `agent.py` | **Becky**: a local agent whose moral code (`constitution.toml`) is enforced by a guardian outside the model. |
-| `tests/` | 84 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
+| `tests/` | 104 offline tests: causality of attention, the parameter-count formula, a proof that distillation transfers a teacher's behaviour, end-to-end evolution runs, and the self-editor's safety gates (it rejects smuggled imports/calls, sandboxes crashes, and never touches the target without confirmation). |
 
 ## How one generation works
 
@@ -81,6 +81,21 @@ The moral code is `ouroboros/constitution.toml`, and it is **enforced in code, n
 - **Pinned rules.** The constitution's hash is checked before *every* action; if it changes mid-run, Becky halts.
 - **Kill switch + budget.** Create `~/.becky-stop` to halt her; she also stops after `max_steps`.
 - **Tamper-evident audit.** Every decision and outcome goes into a hash-chained log.
+
+### Owner passphrase: only you can change her rules
+
+```bash
+python -m ouroboros init-owner                      # type a passphrase at a hidden prompt, once
+python -m ouroboros becky "..."                     # starts only if her rules are signed by you
+python -m ouroboros amend --set write_file=allow    # change a tunable rule (asks for the passphrase)
+python -m ouroboros amend --reset                   # back to the shipped defaults
+```
+
+The passphrase is typed only at a hidden prompt on your machine. It is never stored, logged, or passed as an argument. What is stored is an Ed25519 signing key encrypted under your passphrase (scrypt + AES-GCM) in `~/.becky/`, plus a signed copy of the constitution. Becky verifies the signature at start-up and before every action, so a hand-edited rules file won't run, and a wrong passphrase changes nothing.
+
+What a signature can and cannot change: it can tune how much she asks you (`allow`/`ask`/`deny` for her four tools) and her step and size limits, up to ceilings fixed in code. It cannot give her a shell, a new tool, network access, or a way out of the workspace. Those are not in the file, so no passphrase unlocks them.
+
+**If you lose the passphrase, nobody can change her rules again** (you would re-initialise). Choose 4+ random words or 16+ characters; keyboard and alphabet runs like `asdfg` or `12345` are rejected. This protects against the agent and against anyone editing the file; it does not stop someone who controls your account and can replace the code and the stored public key, so keep `~/.becky/` permission-locked to your user.
 
 **Limits, stated plainly.** This governs the tools Becky is given; it cannot make a model "good". A hash chain reveals tampering but can't stop someone with full disk access from rewriting the whole log. A bug in `guardian.py` is a hole. It is a seatbelt, not a conscience.
 

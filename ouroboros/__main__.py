@@ -85,10 +85,21 @@ def cmd_selfedit(a: argparse.Namespace) -> None:
 def cmd_becky(a: argparse.Namespace) -> None:
     from .agent import Agent, OllamaLLM
     from .guardian import DEFAULT_CONSTITUTION, AuditLog, ClaudeReviewer, Guardian
+    from .owner import DEFAULT_OWNER_DIR, OwnerError, is_initialised
 
+    owner_dir = Path(a.owner_dir)
+    if not is_initialised(owner_dir) and not a.unsigned:
+        raise SystemExit("No owner passphrase is set up yet. Run:  python -m ouroboros init-owner\n"
+                         "(or pass --unsigned to run with unsigned rules)")
     audit = AuditLog(Path(a.audit))
     reviewer = ClaudeReviewer() if a.claude_review else None
-    g = Guardian(DEFAULT_CONSTITUTION, Path(a.workspace), audit, reviewer=reviewer)
+    try:
+        if a.unsigned:
+            g = Guardian(DEFAULT_CONSTITUTION, Path(a.workspace), audit, reviewer=reviewer)
+        else:
+            g = Guardian(DEFAULT_CONSTITUTION, Path(a.workspace), audit, reviewer=reviewer, owner_dir=owner_dir)
+    except OwnerError as exc:
+        raise SystemExit(f"Refusing to start: {exc}")
 
     def confirm(action, decision) -> bool:
         print(f"\nBecky wants to run: {action.tool} {action.args}")
@@ -96,6 +107,51 @@ def cmd_becky(a: argparse.Namespace) -> None:
 
     print(f"workspace: {g.workspace}\naudit log: {audit.path}\nkill switch: create {g.stop_file}")
     print("\n" + Agent(OllamaLLM(a.model), g, confirm).run(a.goal))
+
+
+def cmd_init_owner(a: argparse.Namespace) -> None:
+    import getpass
+
+    from .owner import OwnerError, init_owner
+
+    print("Choose a passphrase. It is typed only here, never stored, and I (the assistant) never see it.")
+    print("Use 4+ random words or 16+ characters. Avoid keyboard patterns.")
+    pw = getpass.getpass("Passphrase: ")
+    if pw != getpass.getpass("Again: "):
+        raise SystemExit("Passphrases did not match.")
+    try:
+        d = init_owner(Path(a.owner_dir), pw)
+    except OwnerError as exc:
+        raise SystemExit(f"Not set: {exc}")
+    print(f"\nOwner key created in {d}\nLose the passphrase and no one can change Becky's rules again; "
+          "write it down somewhere only you can reach.")
+
+
+def cmd_amend(a: argparse.Namespace) -> None:
+    import getpass
+
+    from .guardian import AuditLog
+    from .owner import OwnerError, amend, reset_constitution
+
+    approvals, limits = {}, {}
+    for item in a.set or []:
+        key, _, val = item.partition("=")
+        if key in ("max_steps", "max_write_bytes"):
+            limits[key] = int(val)
+        else:
+            approvals[key] = val
+    if not (approvals or limits or a.reset):
+        raise SystemExit("Nothing to do. Example: --set write_file=allow --set max_steps=40")
+    pw = getpass.getpass("Owner passphrase: ")
+    try:
+        if a.reset:
+            reset_constitution(Path(a.owner_dir), pw)
+            print("Rules restored to the shipped defaults and re-signed.")
+        if approvals or limits:
+            for line in amend(Path(a.owner_dir), pw, approvals, limits, audit=AuditLog(Path(a.audit))):
+                print("changed", line)
+    except OwnerError as exc:
+        raise SystemExit(f"Refused: {exc}")
 
 
 def cmd_audit(a: argparse.Namespace) -> None:
@@ -170,9 +226,23 @@ def main() -> None:
     b.add_argument("--workspace", default="becky_workspace")
     b.add_argument("--audit", default=str(home / "audit.jsonl"))
     b.add_argument("--model", default="llama3.2", help="a model served by local Ollama")
+    b.add_argument("--owner-dir", default=str(home))
+    b.add_argument("--unsigned", action="store_true", help="run without owner-signed rules")
     b.add_argument("--claude-review", action="store_true",
                    help="ask Claude for a second opinion on risky actions (needs ANTHROPIC_API_KEY)")
     b.set_defaults(fn=cmd_becky)
+
+    io = sub.add_parser("init-owner", help="set the owner passphrase (typed at a hidden prompt)")
+    io.add_argument("--owner-dir", default=str(home))
+    io.set_defaults(fn=cmd_init_owner)
+
+    am = sub.add_parser("amend", help="change Becky's tunable rules (needs the owner passphrase)")
+    am.add_argument("--set", action="append", metavar="KEY=VALUE",
+                    help="e.g. write_file=allow, read_file=ask, max_steps=40")
+    am.add_argument("--reset", action="store_true", help="restore the shipped default rules")
+    am.add_argument("--owner-dir", default=str(home))
+    am.add_argument("--audit", default=str(home / "audit.jsonl"))
+    am.set_defaults(fn=cmd_amend)
 
     au = sub.add_parser("audit", help="verify the audit log's hash chain")
     au.add_argument("--log", default=str(home / "audit.jsonl"))

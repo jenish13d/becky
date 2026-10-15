@@ -36,9 +36,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .owner import OwnerError, verify_bytes
+
 DEFAULT_CONSTITUTION = Path(__file__).resolve().parent / "constitution.toml"
 VERDICTS = ("allow", "ask", "deny")
 GENESIS = "0" * 64
+# Hard ceilings fixed in code: no constitution, signed or not, can raise them.
+MAX_STEPS_CAP = 200
+MAX_WRITE_CAP = 1_000_000
 
 
 class Halted(RuntimeError):
@@ -82,18 +87,27 @@ class Constitution:
 
     @classmethod
     def load(cls, path: Path) -> "Constitution":
-        raw = Path(path).read_bytes()
+        return cls.from_bytes(Path(path).read_bytes())
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "Constitution":
         data = tomllib.loads(raw.decode("utf-8"))
         approval = dict(data.get("approval", {}))
         bad = {k: v for k, v in approval.items() if v not in VERDICTS}
         if bad:
             raise ValueError(f"invalid approval values (want one of {VERDICTS}): {bad}")
         limits = data.get("limits", {})
+        max_steps = int(limits.get("max_steps", 25))
+        max_write = int(limits.get("max_write_bytes", 20000))
+        if not 1 <= max_steps <= MAX_STEPS_CAP:
+            raise ValueError(f"max_steps must be between 1 and {MAX_STEPS_CAP}")
+        if not 1 <= max_write <= MAX_WRITE_CAP:
+            raise ValueError(f"max_write_bytes must be between 1 and {MAX_WRITE_CAP}")
         return cls(
             principles=list(data.get("principles", {}).get("text", [])),
             approval=approval,
-            max_steps=int(limits.get("max_steps", 25)),
-            max_write_bytes=int(limits.get("max_write_bytes", 20000)),
+            max_steps=max_steps,
+            max_write_bytes=max_write,
             sha256=hashlib.sha256(raw).hexdigest(),
         )
 
@@ -158,9 +172,18 @@ class Guardian:
         protected: list[Path] | None = None,
         stop_file: Path | None = None,
         reviewer: Reviewer | None = None,
+        owner_dir: Path | None = None,
     ):
+        """With ``owner_dir`` set, the constitution is that directory's signed copy and must
+        carry a valid owner signature at start-up and before every action."""
+        self.owner_dir = Path(owner_dir).resolve() if owner_dir else None
+        if self.owner_dir:
+            constitution_path = self.owner_dir / "constitution.toml"
         self.constitution_path = Path(constitution_path).resolve()
-        self.constitution = Constitution.load(self.constitution_path)
+        raw = self.constitution_path.read_bytes()
+        if self.owner_dir:
+            verify_bytes(self.owner_dir, raw)  # raises OwnerError: refuse to start
+        self.constitution = Constitution.from_bytes(raw)
         self._pinned = self.constitution.sha256
         self.workspace = Path(workspace).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -168,6 +191,8 @@ class Guardian:
         defaults = [Path(__file__).resolve().parent, audit.path]
         self.protected = [Path(p).resolve() for p in (defaults if protected is None else protected)]
         self.protected.append(self.constitution_path)
+        if self.owner_dir:
+            self.protected.append(self.owner_dir)
         self.stop_file = Path(stop_file) if stop_file else Path.home() / ".becky-stop"
         self.reviewer = reviewer
         self.steps = 0
@@ -195,11 +220,16 @@ class Guardian:
         if self.stop_file.exists():
             raise Halted("kill switch engaged")
         try:
-            current = hashlib.sha256(self.constitution_path.read_bytes()).hexdigest()
+            raw = self.constitution_path.read_bytes()
         except OSError as exc:
             raise Halted("constitution is unreadable") from exc
-        if current != self._pinned:
+        if hashlib.sha256(raw).hexdigest() != self._pinned:
             raise Halted("constitution changed while running")
+        if self.owner_dir:
+            try:
+                verify_bytes(self.owner_dir, raw)
+            except OwnerError as exc:
+                raise Halted(str(exc)) from exc
 
     # ---------------------------------------------------------------- decide
     def check(self, action: Action) -> Decision:
