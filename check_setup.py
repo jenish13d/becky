@@ -15,7 +15,10 @@ import hashlib
 import importlib
 import platform
 import sys
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message="Failed to initialize NumPy")
 
 HERE = Path(__file__).resolve().parent
 MIN_PYTHON = (3, 11)

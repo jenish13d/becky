@@ -403,19 +403,25 @@ def cmd_becky(a: argparse.Namespace) -> None:
 def cmd_init_owner(a: argparse.Namespace) -> None:
     import getpass
 
-    from .owner import OwnerError, init_owner
+    from .owner import MIN_LEN, OwnerError, init_owner
 
     print("Choose a passphrase. It is typed only here, never stored, and I (the assistant) never see it.")
-    print("Use 4+ random words or 16+ characters. Avoid keyboard patterns.")
-    pw = getpass.getpass("Passphrase: ")
-    if pw != getpass.getpass("Again: "):
-        raise SystemExit("Passphrases did not match.")
-    try:
-        d = init_owner(Path(a.owner_dir), pw)
-    except OwnerError as exc:
-        raise SystemExit(f"Not set: {exc}")
-    print(f"\nOwner key created in {d}\nLose the passphrase and no one can change Becky's rules again; "
-          "write it down somewhere only you can reach.")
+    print(f"It must be at least {MIN_LEN} characters. Four random words work well, like: river-moss-copper-velvet")
+    print("Avoid keyboard patterns such as 'asdfg' or '12345'. Nothing shows while you type; that is normal.\n")
+    for attempt in range(1, 6):
+        pw = getpass.getpass("Passphrase: ")
+        if pw != getpass.getpass("Again: "):
+            print("The two entries did not match. Try again.\n")
+            continue
+        try:
+            d = init_owner(Path(a.owner_dir), pw)
+        except OwnerError as exc:
+            print(f"Not accepted: {exc}. Try again ({5 - attempt} tries left).\n")
+            continue
+        print(f"\nOwner key created in {d}\nLose the passphrase and no one can change Becky's rules again; "
+              "write it down somewhere only you can reach.")
+        return
+    raise SystemExit("No passphrase was set after 5 tries. Run start.bat to try again.")
 
 
 def cmd_amend(a: argparse.Namespace) -> None:

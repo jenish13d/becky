@@ -13,7 +13,8 @@ echo.
 python -m ouroboros serve
 if errorlevel 1 (
   echo.
-  echo Becky stopped with an error. Read the message above.
-  echo Details are also saved in: %USERPROFILE%\.becky\last-error.txt  - send me that file.
+  echo Becky stopped. The message above says why.
+  echo Most of the time it is something simple, like a passphrase that was too short. Just run this again.
+  echo Only if it says "unexpected error" is a file saved at %USERPROFILE%\.becky\last-error.txt - send me that.
 )
 pause

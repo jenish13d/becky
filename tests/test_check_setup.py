@@ -89,3 +89,69 @@ def test_the_launchers_run_the_check_first_and_never_close_silently():
     for name in ("start.bat", "setup.bat", "serve.bat"):
         raw = (ROOT / name).read_bytes()
         assert raw.count(b"\r\n") == raw.count(b"\n")  # every line ends CRLF, as Windows batch files need
+
+
+# ------------------------------------------------- first-run passphrase and the NumPy notice
+def _feed(monkeypatch, entries):
+    it = iter(entries)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(it))
+
+
+@pytest.fixture
+def fast_owner(monkeypatch):
+    from ouroboros import owner as owner_mod
+
+    monkeypatch.setattr(owner_mod, "KDF_N", 2**10)
+    monkeypatch.setattr(owner_mod, "FAIL_DELAY", 0)
+    return owner_mod
+
+
+def test_a_too_short_passphrase_is_explained_and_asked_for_again(tmp_path, monkeypatch, capsys, fast_owner):
+    import argparse
+
+    from ouroboros.__main__ import cmd_init_owner
+
+    _feed(monkeypatch, ["short", "short",                      # too short
+                        "asdfghjkl13M", "asdfghjkl13M",        # keyboard run
+                        "abc-xyz-123-qrs", "different-words",  # entries differ
+                        "river-moss-copper-velvet", "river-moss-copper-velvet"])
+    cmd_init_owner(argparse.Namespace(owner_dir=str(tmp_path / "owner")))
+    out = capsys.readouterr().out
+    assert "at least 12 characters" in out and "river-moss-copper-velvet" in out  # the rule is shown up front
+    assert out.count("Not accepted") == 2 and "did not match" in out
+    assert fast_owner.is_initialised(tmp_path / "owner")
+
+
+def test_it_gives_up_politely_after_five_bad_tries_and_creates_nothing(tmp_path, monkeypatch, fast_owner):
+    import argparse
+
+    from ouroboros.__main__ import cmd_init_owner
+
+    _feed(monkeypatch, ["short", "short"] * 5)
+    with pytest.raises(SystemExit) as e:
+        cmd_init_owner(argparse.Namespace(owner_dir=str(tmp_path / "owner")))
+    assert "5 tries" in str(e.value) and not fast_owner.is_initialised(tmp_path / "owner")
+
+
+def _stderr_of(code: str) -> str:
+    import subprocess
+
+    return subprocess.run([sys.executable, "-W", "default", "-c", code], capture_output=True, text=True,
+                          cwd=ROOT, timeout=120).stderr
+
+
+def test_the_harmless_numpy_notice_is_silenced_when_becky_is_imported():
+    block = "import sys; sys.modules['numpy'] = None; "
+    control = _stderr_of(block + "import torch")
+    if "Failed to initialize NumPy" not in control:
+        pytest.skip("this PyTorch build does not emit the notice, so there is nothing to silence")
+    assert "Failed to initialize NumPy" not in _stderr_of(block + "import ouroboros, torch")  # package first
+    assert "Failed to initialize NumPy" not in _stderr_of(block + "import ouroboros.brain")
+
+
+def test_numpy_is_now_installed_by_setup_and_the_launchers_no_longer_cry_crash():
+    assert any(line.startswith("numpy") for line in (ROOT / "requirements.txt").read_text().splitlines())
+    for name in ("start.bat", "serve.bat"):
+        text = (ROOT / name).read_text()
+        assert "stopped with an error" not in text and "passphrase that was too short" in text
+        assert "last-error.txt" in text
